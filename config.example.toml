@@ -1,0 +1,61 @@
+# Spotifify 配置模板。`spotifify init` 会把它写到 ~/.spotifify/config.toml
+
+[spotify]
+# Spotify Developer Dashboard 创建的 app 的 Client ID（PKCE，无需 secret）
+# Redirect URI 必须填 http://127.0.0.1:8765/callback（端口与 redirect_port 一致）
+client_id = ""
+redirect_port = 8765
+# "from_token" = 账号所在国家；也可写 "US" / "JP" 等
+market = "from_token"
+
+[netease]
+enabled = true
+# 是否同步"我喜欢的音乐"
+include_liked = true
+# 白名单：只同步这些歌单（歌单名、歌单 id，或 "liked" 代表"我喜欢的音乐"）；空 = 全部自建歌单
+include_playlists = []
+# 按歌单名或 id 排除
+exclude_playlists = []
+# 匹配到的歌曲同时加入 Liked Songs
+like_matched = true
+
+[local]
+enabled = true
+dirs = ["D:/Music"]
+playlist_name = "Local Library"
+# false = 本地文件只作为其他歌单里未匹配歌曲的音频来源（导出/粘贴路径），不再镜像成一个 Spotify 歌单
+mirror_playlist = true
+extensions = ["mp3", "flac", "m4a", "ogg", "wav", "ncm"]
+# tag 缺失时的文件名解析模式："artist-title" 或 "title-artist"
+filename_pattern = "artist-title"
+like_matched = false
+
+[export]
+# 已在 Spotify 桌面端 设置→本地文件 中添加为来源的目录
+dir = "D:/Spotify Local Files"
+ffmpeg = "ffmpeg"
+bitrate = "320k"
+
+[matching]
+auto_threshold = 0.90
+review_threshold = 0.60
+duration_tolerance_ms = 3000
+retry_unmatched_after_days = 30
+search_cache_ttl_days = 30
+# 每次运行最多发起的 Spotify 搜索请求数（缓存命中不计）；0 = 不限。Development Mode 应用有每日配额，超出会被封 24h
+max_searches_per_run = 400
+# 每首歌最多尝试的查询数（isrc / 字段限定 / 自由文本 / 别名 / 纯标题）
+max_queries_per_track = 4
+search_concurrency = 2
+search_min_interval_ms = 120
+# 声纹识别（需要 fpcalc 二进制 + AcoustID API key）
+fingerprint = false
+fpcalc = "fpcalc"
+acoustid_key = ""
+
+[matching.artist_aliases]
+# "周杰倫" = "周杰伦"
+
+[sync]
+# Spotify 端歌单名前缀，例如 "NE · "
+playlist_prefix = ""
