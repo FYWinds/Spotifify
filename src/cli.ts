@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import qrcode from "qrcode-terminal";
 import { CONFIG_FILENAME, CONFIG_TEMPLATE, loadConfig, missingConfigKeys, stateDir, upgradeConfig, withArtistAliases, type Config } from "./config.ts";
@@ -12,6 +13,7 @@ import { NeteaseAuthError, NeteaseClient } from "./sources/netease/client.ts";
 import { SpotifyApi } from "./spotify/api.ts";
 import { AuthExpiredError, loginPkce, type TokenStore } from "./spotify/auth.ts";
 import { SpotifyClient } from "./spotify/client.ts";
+import { compareExports, findLocalFilesIndexes, parseLocalFilesIndex } from "./spotify/localIndex.ts";
 import { SCOPES, type SpotifyTokens } from "./spotify/types.ts";
 import { openDatabase, schemaVersion } from "./state/db.ts";
 import { Repo } from "./state/repo.ts";
@@ -91,6 +93,38 @@ function fail(e: unknown): never {
   process.exit(EXIT_ERROR);
 }
 
+/**
+ * Compare `local_export` with the desktop client's own local-files index. Every grey "can't play"
+ * row traces back to one of: the client never indexed the file, or it indexed it with another
+ * identity (a different duration); both are visible here without touching the network.
+ */
+async function checkClientIndex(repo: Repo, report: (ok: boolean, label: string, detail: string) => void): Promise<void> {
+  const exports = repo.listExports();
+  if (exports.length === 0) return;
+  const indexes = findLocalFilesIndexes();
+  if (indexes.length === 0) {
+    report(true, "client index", "desktop client index not found; skipped");
+    return;
+  }
+  for (const file of indexes) {
+    const written = statSync(file).mtime.toLocaleString();
+    const entries = parseLocalFilesIndex(await readFile(file));
+    const user = basename(dirname(file)).replace(/-user$/, "");
+    if (entries.length === 0) {
+      report(false, "client index", `empty for user ${user} (written ${written}); restart the desktop client or toggle the folder under Settings → Local Files`);
+      continue;
+    }
+    const c = compareExports(entries, exports);
+    const examples = (xs: string[]) => xs.slice(0, 3).join(", ") + (xs.length > 3 ? ", …" : "");
+    if (c.mismatched.length > 0) {
+      report(false, "client index", `${c.mismatched.length} export(s) indexed with another duration: ${examples(c.mismatched.map((m) => `${m.file} (client ${m.client}s, ours ${m.ours}s)`))}`);
+    }
+    if (c.missing.length > 0) {
+      report(false, "client index", `${c.missing.length} export(s) not indexed by the desktop client (user ${user}, written ${written}): ${examples(c.missing)}; restart the client or toggle the folder`);
+    }
+    if (c.mismatched.length === 0 && c.missing.length === 0) report(true, "client index", `${c.matched} export(s) indexed with matching identity (user ${user}, written ${written})`);
+  }
+}
 // ---- init / doctor ----------------------------------------------------------
 
 program
@@ -185,6 +219,7 @@ program
       } else {
         report(true, "auth netease", "disabled");
       }
+      await checkClientIndex(repo, report);
       db.close();
     } catch (e) {
       report(false, "state.db", e instanceof Error ? e.message : String(e));
