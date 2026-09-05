@@ -331,8 +331,17 @@ function printSummary(s: SyncSummary): void {
     );
   }
   console.log(`match state: ${Object.entries(s.matchCounts).map(([k, v]) => `${k} ${v}`).join(", ")}`);
-  if (s.plan.reviewPending > 0) console.log(`\n${s.plan.reviewPending} track(s) need review: run \`spotifify review\``);
+  printReviewHint(s.plan.reviewPending, s.plan.lowPending);
   printAwaiting(s.awaiting);
+}
+
+/** `local` splits into what the matcher gave up on (still worth a glance) and what the user chose. */
+function printReviewHint(review: number, low: number): void {
+  if (review === 0 && low === 0) return;
+  const parts: string[] = [];
+  if (review > 0) parts.push(`${review} track(s) need review`);
+  if (low > 0) parts.push(`${low} unmatched by the matcher (low-confidence candidates, tab "low")`);
+  console.log(`\n${parts.join("; ")}: run \`spotifify review\``);
 }
 
 function printAwaiting(entries: AwaitingEntry[]): void {
@@ -367,7 +376,9 @@ program
     try {
       const c = await ctx();
       const counts = c.repo.countMatches();
-      console.log(`match state: ${Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(", ")}`);
+      const low = c.repo.countLowReview();
+      console.log(`match state: ${Object.entries(counts).map(([k, v]) => (k === "local" ? `local ${v} (${low} by matcher, ${v - low} by user)` : `${k} ${v}`)).join(", ")}`);
+      printReviewHint(counts.review, low);
       console.log("\nplaylists:");
       for (const p of c.repo.listSourcePlaylists()) {
         const m = c.repo.getSpotifyPlaylist(p.id);
@@ -398,7 +409,7 @@ program
       const rows = statuses.flatMap((s) => c.repo.listMatches(s)).filter((m) => keys.has(m.canonicalKey));
       const tracks = c.repo.representativeTracks(rows.map((m) => m.canonicalKey));
       const exports = new Map(c.repo.listExports().map((e) => [e.canonicalKey, e] as const));
-      if (opts.tsv) console.log(["status", "key", "title", "artists", "album", "playlists", "file", "exported"].join("\t"));
+      if (opts.tsv) console.log(["status", "decided_by", "key", "title", "artists", "album", "playlists", "file", "exported"].join("\t"));
       let withFile = 0;
       for (const m of rows) {
         const t = tracks.get(m.canonicalKey);
@@ -407,10 +418,11 @@ program
         const playlists = c.repo.playlistNamesForKey(m.canonicalKey).join(", ");
         const file = t.file?.path ?? "";
         const exported = exports.get(m.canonicalKey)?.exportPath ?? "";
-        if (opts.tsv) console.log([m.status, m.canonicalKey, t.title, t.artists.join("/"), t.album ?? "", playlists, file, exported].join("\t"));
+        const status = m.status === "local" ? `local/${m.decidedBy === "user" ? "user" : "auto"}` : m.status;
+        if (opts.tsv) console.log([m.status, m.decidedBy ?? "", m.canonicalKey, t.title, t.artists.join("/"), t.album ?? "", playlists, file, exported].join("\t"));
         else {
           const link = t.neteaseId !== undefined ? `https://music.163.com/#/song?id=${t.neteaseId}` : "";
-          console.log(`[${m.status}] ${t.artists.join(", ")} - ${t.title}${t.album ? ` (${t.album})` : ""}  ${link}`);
+          console.log(`[${status}] ${t.artists.join(", ")} - ${t.title}${t.album ? ` (${t.album})` : ""}  ${link}`);
           console.log(`         in: ${playlists}${file ? `\n         file: ${file}` : ""}${exported ? `\n         exported: ${exported}` : ""}`);
         }
       }

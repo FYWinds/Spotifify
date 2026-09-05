@@ -102,8 +102,8 @@ export function App({ repo, matcher, market, initialQueues, onExit }: AppProps) 
   const { rows } = useTerminalSize();
   const [state, setState] = useState<UiState>(() => ({
     queues: initialQueues,
-    tab: initialQueues.review.length > 0 || initialQueues.local.length === 0 ? "review" : "local",
-    cursor: { review: 0, local: 0 },
+    tab: TABS.find((t) => initialQueues[t].length > 0) ?? "review",
+    cursor: { review: 0, low: 0, local: 0 },
     selected: 0,
     mode: { kind: "normal" },
     busy: new Set(),
@@ -265,7 +265,7 @@ export function App({ repo, matcher, market, initialQueues, onExit }: AppProps) 
     );
   };
 
-  const finished = state.queues.review.length === 0 && state.queues.local.length === 0 && state.undo.length === 0;
+  const finished = TABS.every((t) => state.queues[t].length === 0) && state.undo.length === 0;
 
   useInput(
     (input, key) => {
@@ -279,7 +279,7 @@ export function App({ repo, matcher, market, initialQueues, onExit }: AppProps) 
         return;
       }
       if (key.tab) {
-        commit({ ...s, tab: s.tab === "review" ? "local" : "review", selected: 0 });
+        commit({ ...s, tab: TABS[(TABS.indexOf(s.tab) + 1) % TABS.length]!, selected: 0 });
         return;
       }
       if (input === "j" || key.downArrow) {

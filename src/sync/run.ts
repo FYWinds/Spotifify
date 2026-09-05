@@ -59,7 +59,7 @@ export interface MatchPhaseSummary {
 export interface SyncSummary {
   pulled: Record<SourceKind, { playlists: number; tracks: number }>;
   matched: MatchPhaseSummary;
-  plan: { creates: number; adds: number; prune: number; moves: number; likes: number; unlikes: number; exports: number; exportGc: number; reviewPending: number };
+  plan: { creates: number; adds: number; prune: number; moves: number; likes: number; unlikes: number; exports: number; exportGc: number; reviewPending: number; lowPending: number };
   apply: ApplySummary | null;
   awaiting: AwaitingEntry[];
   matchCounts: Record<string, number>;
@@ -112,6 +112,7 @@ export async function runSync(deps: SyncDeps, opts: SyncOptions): Promise<SyncRe
         exports: plan.exports.length,
         exportGc: plan.exportGc.length,
         reviewPending: plan.reviewPending,
+        lowPending: plan.lowPending,
       },
       apply,
       awaiting: awaitingEntries(plan, repo),
@@ -336,7 +337,7 @@ export async function buildPlan(deps: SyncDeps, opts: Pick<SyncOptions, "prune" 
 
   const planned = new Set<string>();
   for (const p of playlists) if (p.spotifyId !== null) planned.add(p.spotifyId);
-  return { playlists, likes, exports: exportPlans, exportGc: planExportGc(repo, cfg, opts, planned), reviewPending: repo.countMatches().review };
+  return { playlists, likes, exports: exportPlans, exportGc: planExportGc(repo, cfg, opts, planned), reviewPending: repo.countMatches().review, lowPending: repo.countLowReview() };
 }
 
 /** What one source playlist wants on Spotify, in source order and deduped by uri, plus the ids it wants liked. */
@@ -479,6 +480,6 @@ export function formatPlan(plan: Plan, prune: boolean): string {
   if (plan.exports.length > 20) lines.push(`    → … ${plan.exports.length - 20} more`);
   for (const e of plan.exportGc.slice(0, 20)) lines.push(`    ${prune ? "-" : "?"} ${e.exportPath}`);
   if (plan.exportGc.length > 20) lines.push(`    ${prune ? "-" : "?"} … ${plan.exportGc.length - 20} more`);
-  lines.push(`review pending: ${plan.reviewPending}`);
+  lines.push(`review pending: ${plan.reviewPending}, low-confidence unmatched: ${plan.lowPending}`);
   return lines.join("\n");
 }

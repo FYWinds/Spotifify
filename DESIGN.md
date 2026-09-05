@@ -256,9 +256,11 @@ spotifify task install|uninstall     注册 / 注销 Windows 任务计划（调�
 
 ## 9. 复核 TUI（`src/tui`，Ink 5 + React 18）
 
+三个队列：`review`（有 ≥ review_threshold 的候选，需要人定）、`low`（matcher 判为未匹配——最佳候选低于 review_threshold 或没有候选，`decided_by=auto`；候选仍列出可选，到期会自动重搜）、`local`（用户按 `l` 保留为本地文件，`decided_by=user`；可改主意）。区分靠 `match.decided_by`，不是新状态：`status` 与 `unmatched` 输出也按 auto/user 拆开。
+
 布局：左列复核项列表（来源歌单 / 标题 / 艺人 / 分数），右侧对比面板——来源 vs 候选逐列对齐显示 title / artists / album / duration(Δ) / score / playable，候选按分数排序。
 
-按键：`j/k` 移动，`Tab` 切换 review / local 列表，`1-9` 选候选，`Enter` 确认，`o` 在浏览器打开选中候选（open.spotify.com/track/…），`O` 打开来源（网易云歌曲页，本地文件则用默认播放器打开），`l` 标为本地上传，`s` 跳过，`/` 自定义搜索词（`ink-text-input`），`p` 粘贴 Spotify 链接/URI 直接指定，`u` 撤销上一决策，`?` 帮助，`q` 退出。每个决策立即写库（`decided_by=user`），无"保存"步骤。
+按键：`j/k` 移动，`Tab` 轮换 review / low / local 列表，`1-9` 选候选，`Enter` 确认，`o` 在浏览器打开选中候选（open.spotify.com/track/…），`O` 打开来源（网易云歌曲页，本地文件则用默认播放器打开），`l` 标为本地上传，`s` 跳过，`/` 自定义搜索词（`ink-text-input`），`p` 粘贴 Spotify 链接/URI 直接指定，`u` 撤销上一决策，`?` 帮助，`q` 退出。每个决策立即写库（`decided_by=user`），无"保存"步骤。
 
 风险：Ink 依赖 `process.stdin.setRawMode`，Bun 1.4 已支持；若遇到问题，`review` 子命令可用 `node` 运行同一份代码（无 Bun 专属 API 进入 TUI 模块，DB 通过接口注入）。
 

@@ -343,6 +343,15 @@ export class Repo {
     return counts;
   }
 
+  /** `local` rows the matcher decided (best candidate under review_threshold, or none) — the review TUI's `low` queue; user decisions are not counted. */
+  countLowReview(): number {
+    return this.db
+      .query<{ n: number }, []>(
+        "SELECT COUNT(*) AS n FROM match m WHERE m.status = 'local' AND COALESCE(m.decided_by, '') != 'user' AND EXISTS (SELECT 1 FROM source_track t WHERE t.canonical_key = m.canonical_key)",
+      )
+      .get()!.n;
+  }
+
   // ---- spotify playlists ------------------------------------------------
 
   getSpotifyPlaylist(sourcePlaylistId: number): SpotifyPlaylistRow | null {

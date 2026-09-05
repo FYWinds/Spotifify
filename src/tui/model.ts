@@ -1,10 +1,14 @@
 import type { MatchRow } from "../match/types.ts";
 import type { Repo, SourceTrackRow } from "../state/repo.ts";
 
-/** Which queue is on screen: `review` = needs a human; `local` = auto-decided unmatched, still pickable. */
-export type Tab = "review" | "local";
+/**
+ * Which queue is on screen: `review` = a candidate needs a human; `low` = decided unmatched by the
+ * matcher (best candidate under review_threshold, or none) and still pickable; `local` = kept as a
+ * local file by the user.
+ */
+export type Tab = "review" | "low" | "local";
 
-export const TABS: readonly Tab[] = ["review", "local"];
+export const TABS: readonly Tab[] = ["review", "low", "local"];
 
 export interface ReviewItem {
   match: MatchRow;
@@ -16,7 +20,7 @@ export type Queues = Record<Tab, ReviewItem[]>;
 
 /** Load one tab's queue; keys without a representative source track are dropped. */
 export function loadQueue(repo: Repo, tab: Tab): ReviewItem[] {
-  const matches = repo.listMatches(tab);
+  const matches = tab === "review" ? repo.listMatches("review") : repo.listMatches("local").filter((m) => (m.decidedBy === "user") === (tab === "local"));
   const tracks = repo.representativeTracks(matches.map((m) => m.canonicalKey));
   const items: ReviewItem[] = [];
   for (const match of matches) {

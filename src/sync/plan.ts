@@ -70,6 +70,8 @@ export interface Plan {
   exportGc: LocalExportRow[];
   /** canonical keys needing human review */
   reviewPending: number;
+  /** canonical keys the matcher left unmatched (best candidate under review_threshold, or none); worth a glance in `spotifify review` */
+  lowPending: number;
 }
 
 export interface RemoteItem {

@@ -13,7 +13,7 @@ export interface ReviewDeps {
 
 /** Runs the interactive review; resolves when the user quits. Every decision is already persisted by then. */
 export async function runReviewTui(deps: ReviewDeps): Promise<{ decided: number }> {
-  const initialQueues = { review: loadQueue(deps.repo, "review"), local: loadQueue(deps.repo, "local") };
+  const initialQueues = { review: loadQueue(deps.repo, "review"), low: loadQueue(deps.repo, "low"), local: loadQueue(deps.repo, "local") };
   let decided = 0;
   const app = render(
     createElement(App, {
