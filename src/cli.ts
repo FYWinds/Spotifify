@@ -277,7 +277,7 @@ program
   .command("sync")
   .description("pull sources, match, and apply the diff to Spotify")
   .option("--dry-run", "print the plan without applying")
-  .option("--prune", "remove tool-added items that left the source (default: report only)")
+  .option("--prune", "remove tool-added items that left the source, superseded local entries, and exported files no longer needed (default: report only)")
   .option("--source <kind>", "only this source: netease | local", (v: string) => {
     if (v !== "netease" && v !== "local") throw new InvalidArgumentError("expected netease or local");
     return v;
@@ -324,10 +324,10 @@ function printSummary(s: SyncSummary): void {
   } else if (s.matched.budgetExhausted) {
     console.log(`  search budget for this run used up (matching.max_searches_per_run); rerun later or raise the budget`);
   }
-  console.log(`plan: create ${s.plan.creates}, add ${s.plan.adds}, move ${s.plan.moves}, prune ${s.plan.prune}, like ${s.plan.likes}, unlike ${s.plan.unlikes}, export ${s.plan.exports}`);
+  console.log(`plan: create ${s.plan.creates}, add ${s.plan.adds}, move ${s.plan.moves}, prune ${s.plan.prune}, like ${s.plan.likes}, unlike ${s.plan.unlikes}, export ${s.plan.exports}, remove export ${s.plan.exportGc}`);
   if (s.apply) {
     console.log(
-      `applied: created ${s.apply.created}, added ${s.apply.added}, moved ${s.apply.moved}, replaced ${s.apply.replaced}, pruned ${s.apply.pruned}, liked ${s.apply.liked}, unliked ${s.apply.unliked}, exported ${s.apply.exported}${s.apply.exportErrors ? ` (${s.apply.exportErrors} export errors)` : ""}`,
+      `applied: created ${s.apply.created}, added ${s.apply.added}, moved ${s.apply.moved}, replaced ${s.apply.replaced}, pruned ${s.apply.pruned}, liked ${s.apply.liked}, unliked ${s.apply.unliked}, exported ${s.apply.exported}${s.apply.exportErrors ? ` (${s.apply.exportErrors} export errors)` : ""}, removed exports ${s.apply.exportsRemoved}`,
     );
   }
   console.log(`match state: ${Object.entries(s.matchCounts).map(([k, v]) => `${k} ${v}`).join(", ")}`);

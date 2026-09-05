@@ -423,6 +423,10 @@ export class Repo {
     );
   }
 
+  deleteExport(key: string): void {
+    this.db.run("DELETE FROM local_export WHERE canonical_key = ?", [key]);
+  }
+
   // ---- caches -----------------------------------------------------------
 
   cacheGet<T>(key: string, now: number, ttlMs: number): T | null {

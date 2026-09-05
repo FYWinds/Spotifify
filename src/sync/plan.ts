@@ -64,6 +64,8 @@ export interface Plan {
   playlists: PlaylistPlan[];
   likes: LikePlan;
   exports: ExportPlan[];
+  /** export records (and files) no longer needed; removed only with --prune, after the playlist prune */
+  exportGc: LocalExportRow[];
   /** canonical keys needing human review */
   reviewPending: number;
 }
@@ -72,10 +74,11 @@ export interface RemoteItem {
   uri: string;
   isLocal: boolean;
   /**
-   * A local entry that names one of our exports but with an identity the client will never resolve
-   * (different duration segment, tags from an earlier export). Removed with --prune so a correct paste can replace it.
+   * A local entry that names one of our exports — exactly, or with an identity the client will never
+   * resolve (different duration segment, tags from an earlier export). Ours to remove with --prune
+   * when it is no longer desired (superseded by a Spotify match, gone from the source, wrong identity).
    */
-  stale: boolean;
+  owned: boolean;
 }
 
 export interface PlaylistPlanInput {
@@ -100,27 +103,27 @@ const LEGACY_TITLE_SUFFIX = / \(local\)$/;
 
 export interface ResolvedRemoteLocal {
   uri: string;
-  stale: boolean;
+  owned: boolean;
 }
 
 /**
  * Map a remote local-file uri onto our export identities. Same artist/album/title/duration as an export
  * → the export's `local_uri`. Same artist/album/title but a different identity (wrong or missing
- * duration segment, legacy title suffix) → stale. Anything else is left untouched (a foreign local file).
+ * duration segment, legacy title suffix) → the verbatim uri (removal by position needs it exactly).
+ * Both are `owned`. Anything else is left untouched (a foreign local file).
  */
 export function resolveRemoteLocalUri(remoteUri: string, exports: readonly LocalExportRow[]): ResolvedRemoteLocal {
   const parts = parseLocalUri(remoteUri);
-  if (!parts) return { uri: remoteUri, stale: false };
+  if (!parts) return { uri: remoteUri, owned: false };
   const fold = (s: string) => s.replace(LEGACY_TITLE_SUFFIX, "").trim().toLowerCase();
   for (const e of exports) {
     const p = parseLocalUri(e.localUri);
     if (!p) continue;
     if (fold(p.artist) !== fold(parts.artist) || fold(p.album) !== fold(parts.album) || fold(p.title) !== fold(parts.title)) continue;
     const exact = parts.durationSec === p.durationSec && parts.title === p.title;
-    // stale entries keep the API's exact uri: removal of local items needs it verbatim alongside positions
-    return exact ? { uri: e.localUri, stale: false } : { uri: remoteUri, stale: true };
+    return { uri: exact ? e.localUri : remoteUri, owned: true };
   }
-  return { uri: buildLocalUri(parts), stale: false };
+  return { uri: buildLocalUri(parts), owned: false };
 }
 
 export function computePlaylistPlan(input: PlaylistPlanInput): PlaylistPlan {
@@ -154,7 +157,7 @@ export function computePlaylistPlan(input: PlaylistPlanInput): PlaylistPlan {
   const foreign: string[] = [];
   remote.forEach((r, i) => {
     if (desiredSet.has(r.uri)) return;
-    if (managed.has(r.uri) || r.stale) {
+    if (managed.has(r.uri) || r.owned) {
       let positions = pruneByUri.get(r.uri);
       if (!positions) {
         positions = [];

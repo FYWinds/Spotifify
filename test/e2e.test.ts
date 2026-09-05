@@ -5,9 +5,9 @@
  * Skipped when ffmpeg is not on PATH.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { ConfigSchema, type Config } from "../src/config.ts";
 import { parseLocalUri } from "../src/spotify/localUri.ts";
 import { SpotifyApi } from "../src/spotify/api.ts";
@@ -414,6 +414,29 @@ describe.skipIf(!haveFfmpeg)("end-to-end sync against a fake Spotify", () => {
     expect(plan.playlists[0]?.moves.length).toBeGreaterThan(0);
     expect(summary.apply).toBeNull();
     expect(fake.writes).toEqual([]);
+  });
+
+  test("a local track that later matches on Spotify: its pasted entry is pruned and the export file is removed with --prune", async () => {
+    playlist().items = ["spotify:track:t1", "spotify:local:Artist+C:Album:Unknown+Song:2", "spotify:track:t9"];
+    fake.addTrack("t3", "Unknown Song", "Artist C", "Album", 2000);
+    const local = repo.listMatches("local");
+    expect(local).toHaveLength(1);
+    // what `spotifify review` does when the user picks a candidate
+    for (const m of local) repo.upsertMatch({ ...m, status: "matched", spotifyId: "t3", spotifyUri: "spotify:track:t3", score: 1, decidedBy: "user", decidedAt: Date.now() });
+
+    const reported = await sync();
+    expect(reported.plan.playlists[0]?.prune).toEqual([{ uri: "spotify:local:Artist+C:Album:Unknown+Song:2", positions: [1] }]);
+    expect(reported.plan.exportGc.map((e) => basename(e.exportPath))).toEqual(["Artist C - Unknown Song.mp3"]);
+    expect(existsSync(join(exportDir, "Artist C - Unknown Song.mp3"))).toBe(true); // report only
+    expect(playlist().items).toEqual(["spotify:track:t1", "spotify:track:t3", "spotify:local:Artist+C:Album:Unknown+Song:2", "spotify:track:t9"]);
+
+    const pruned = await sync({ prune: true });
+    expect(pruned.summary.apply?.pruned).toBe(1);
+    expect(pruned.summary.apply?.exportsRemoved).toBe(1);
+    expect(playlist().items).toEqual(["spotify:track:t1", "spotify:track:t3", "spotify:track:t9"]);
+    expect(readdirSync(exportDir)).toEqual([]);
+    expect(repo.listExports()).toEqual([]);
+    expect(pruned.summary.awaiting).toEqual([]);
   });
 });
 

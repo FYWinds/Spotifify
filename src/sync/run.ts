@@ -19,6 +19,7 @@ import { sanitizeFilename } from "../util/fs.ts";
 import { log } from "../util/log.ts";
 import { mapLimit } from "../util/retry.ts";
 import { applyExports, applyPlan, type ApplySummary } from "./apply.ts";
+import { removeExports } from "./export.ts";
 import { computePlaylistPlan, resolveRemoteLocalUri, type DesiredItem, type ExportPlan, type Plan, type PlaylistPlan, type RemoteItem } from "./plan.ts";
 
 export interface SyncOptions {
@@ -58,7 +59,7 @@ export interface MatchPhaseSummary {
 export interface SyncSummary {
   pulled: Record<SourceKind, { playlists: number; tracks: number }>;
   matched: MatchPhaseSummary;
-  plan: { creates: number; adds: number; prune: number; moves: number; likes: number; unlikes: number; exports: number; reviewPending: number };
+  plan: { creates: number; adds: number; prune: number; moves: number; likes: number; unlikes: number; exports: number; exportGc: number; reviewPending: number };
   apply: ApplySummary | null;
   awaiting: AwaitingEntry[];
   matchCounts: Record<string, number>;
@@ -92,6 +93,8 @@ export async function runSync(deps: SyncDeps, opts: SyncOptions): Promise<SyncRe
       apply.exported = exported.exported;
       apply.exportErrors = exported.errors;
     }
+    // After apply: the playlist entries pointing at these files were pruned above, so the files can go.
+    if (apply && opts.prune) apply.exportsRemoved = await removeExports(plan.exportGc, repo);
     const summary: SyncSummary = {
       pulled,
       matched,
@@ -103,6 +106,7 @@ export async function runSync(deps: SyncDeps, opts: SyncOptions): Promise<SyncRe
         likes: plan.likes.add.length,
         unlikes: plan.likes.prune.length,
         exports: plan.exports.length,
+        exportGc: plan.exportGc.length,
         reviewPending: plan.reviewPending,
       },
       apply,
@@ -128,6 +132,19 @@ export function selectedKeys(repo: Repo, cfg: Config, opts: Pick<SyncOptions, "s
 export function planExportsOnly(repo: Repo, cfg: Config, opts: Pick<SyncOptions, "source" | "playlist"> = {}, force = false): ExportPlan[] {
   const keys = selectedKeys(repo, cfg, opts);
   return planExports(repo, repo.listMatches("local").map((m) => m.canonicalKey).filter((k) => keys.has(k)), repo.listExports(), force);
+}
+
+/**
+ * Exported files no longer needed: the track left every mirrored playlist, or it has a Spotify match
+ * now. Only meaningful for a full run — with `--playlist`/`--source` the other playlists' exports
+ * would look unneeded — and the remote entries pointing at these files are pruned in the same run
+ * (they are `owned`), so nothing in a playlist is left pointing at a deleted file.
+ */
+export function planExportGc(repo: Repo, cfg: Config, opts: Pick<SyncOptions, "source" | "playlist">): LocalExportRow[] {
+  if (opts.source || opts.playlist) return [];
+  const needed = selectedKeys(repo, cfg, opts);
+  const local = new Set(repo.listMatches("local").map((m) => m.canonicalKey));
+  return repo.listExports().filter((e) => !needed.has(e.canonicalKey) || !local.has(e.canonicalKey));
 }
 
 // ---- pull -------------------------------------------------------------------
@@ -283,9 +300,9 @@ export async function buildPlan(deps: SyncDeps, opts: Pick<SyncOptions, "prune" 
       const listing = await listPlaylistItemsConsistently(api, remote.id);
       snapshotId = listing.snapshotId;
       remoteItems = listing.items.map((it) => {
-        if (!it.item) return { uri: "", isLocal: false, stale: false };
+        if (!it.item) return { uri: "", isLocal: false, owned: false };
         if (it.is_local || it.item.is_local) return { ...resolveRemoteLocalUri(it.item.uri, exports), isLocal: true };
-        return { uri: it.item.uri, isLocal: false, stale: false };
+        return { uri: it.item.uri, isLocal: false, owned: false };
       });
     }
 
@@ -312,7 +329,7 @@ export async function buildPlan(deps: SyncDeps, opts: Pick<SyncOptions, "prune" 
     prune: [...repo.likedIds()].filter((id) => !likeDesired.has(id)),
   };
 
-  return { playlists, likes, exports: exportPlans, reviewPending: repo.countMatches().review };
+  return { playlists, likes, exports: exportPlans, exportGc: planExportGc(repo, cfg, opts), reviewPending: repo.countMatches().review };
 }
 
 /** Which of `ids` are already liked. `/me/tracks/contains` is 403 for some development-mode apps; then list the library instead. */
@@ -416,9 +433,11 @@ export function formatPlan(plan: Plan, prune: boolean): string {
     for (const x of p.prune) lines.push(`    ${prune ? "-" : "?"} ${x.uri}`);
   }
   lines.push(`likes: +${plan.likes.add.length}, prune ${plan.likes.prune.length}${prune ? "" : " (report only)"}`);
-  lines.push(`exports: ${plan.exports.length}`);
+  lines.push(`exports: ${plan.exports.length}, remove ${plan.exportGc.length}${prune ? "" : " (report only)"}`);
   for (const e of plan.exports.slice(0, 20)) lines.push(`    → ${e.baseName}  (${e.sourcePath})`);
   if (plan.exports.length > 20) lines.push(`    → … ${plan.exports.length - 20} more`);
+  for (const e of plan.exportGc.slice(0, 20)) lines.push(`    ${prune ? "-" : "?"} ${e.exportPath}`);
+  if (plan.exportGc.length > 20) lines.push(`    ${prune ? "-" : "?"} … ${plan.exportGc.length - 20} more`);
   lines.push(`review pending: ${plan.reviewPending}`);
   return lines.join("\n");
 }

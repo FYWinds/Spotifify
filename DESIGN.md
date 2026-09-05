@@ -181,7 +181,7 @@ score   = 0.45·title + 0.30·artist + 0.10·album + 0.15·dur
 
 ### 6.2 远端快照
 
-`GET /playlists/{id}/items`（50/页，`fields` 限定 `uri,is_local,name,artists,duration_ms`）。本地项的 URI 解码后与 `local_export.local_uri` 比较（桌面端编码细节不完全稳定——例如它把 `(` 写成 `%28`——比较用解码后的规范四段形式）。艺人/专辑/标题都对得上但身份不同的条目（时长段不同或缺失、三段粘贴被客户端改写成的 `:0`、带旧后缀的标题）归为 **stale**：它们是本工具早期粘贴的、客户端永远播不了的残留，`--prune` 时按 position 删除，删后该歌重新进入待粘贴列表。
+`GET /playlists/{id}/items`（50/页，`fields` 限定 `uri,is_local,name,artists,duration_ms`），前后各读一次 `GET /playlists/{id}?fields=snapshot_id`，两次不一致就重读（最多 3 次）——列表里的位置只对那个快照有意义，见 6.3。本地项的 URI 解码后与 `local_export.local_uri` 比较（桌面端编码细节不完全稳定——例如它把 `(` 写成 `%28`——比较用解码后的规范四段形式）。能对上导出记录的条目（身份完全一致，或艺人/专辑/标题一致但身份不同：时长段不同或缺失、三段粘贴被客户端改写成的 `:0`、带旧后缀的标题）归为 **owned**：是本工具的产物，不在 desired 里时（被 Spotify 匹配取代、来源删除、身份错误）由 `--prune` 按 position 删除；其它本地项是 foreign。
 
 ### 6.3 Diff → Plan
 
@@ -190,13 +190,14 @@ present   = desired ∩ remote
 toAdd     = desired.spotify − remote                  # POST /items，100/批，追加到末尾
 awaiting  = desired.local − remote                    # 无法 API 添加 → pending paste 列表
 stale     = remote − desired
-  ├ managed_item 里有（工具加的） → prune 候选（--prune 才执行；本地项用 positions+snapshot_id 删）
-  └ 没有（人加的 / 粘贴进来的本地项且来源已删）→ foreign，保留在尾部，仅报告
+  ├ managed_item 里有（工具加的）或 owned 本地项 → prune 候选（--prune 才执行；本地项用 positions + 列表时的 snapshot_id 删，API 按该快照校验位置，规划到执行之间用户在客户端动过歌单也不会删错行）
+  └ 都不是（人加的曲库歌 / 别人的本地文件）→ foreign，保留在尾部，仅报告
 targetOrder = desired.filter(present ∪ toAdd) ++ stale(保持现有相对顺序)
 moves     = reorderPlan(currentOrder, targetOrder)    # 见 6.4
 likes     = (∪ 各来源 like_matched=true 歌单的 matched spotify_id) − remoteLiked   # PUT /me/tracks 50/批
 unlikes   = liked(工具加的) − desired 全集             # --prune 才执行
 exports   = status=local ∧ 有本地文件 ∧ 无 local_export 或 content_hash 变化
+exportGc  = local_export − (status=local ∧ 属于镜像歌单)   # --prune 才执行，在 apply 之后（指向这些文件的 owned 条目已先被删）；带 --playlist/--source 的运行不做
 creates   = 无 spotify_playlist 映射，或映射的 spotify_id 已 404 / 不在 /me/playlists
 renames   = 来源歌单改名
 ```
@@ -234,7 +235,7 @@ renames   = 来源歌单改名
 
 ```
 spotifify init [--upgrade|--force]   生成模板；--upgrade 把新版本新增的选项合并进现有配置（保留原值，写 .bak）
-spotifify doctor                     检查配置（含"有新选项未写入"提示）/ ffmpeg / fpcalc / 鉴权 / export 目录 / DB
+spotifify doctor                     检查配置（含"有新选项未写入"提示）/ ffmpeg / fpcalc / 鉴权 / export 目录 / DB / 桌面端本地文件索引（解析 local-files.bnk，报告未被索引或时长与我们不一致的导出——歌单里灰掉的两种原因，Web API 看不到）
 spotifify auth spotify               PKCE 登录
 spotifify auth netease [--cookie]    扫码或粘贴 Cookie
 spotifify sync [--dry-run] [--prune] [--source netease|local] [--playlist <name>] [--skip-match]
@@ -340,6 +341,7 @@ src/
     client.ts                fetch 封装 / 分页 / 429（SPOTIFIFY_SPOTIFY_API 可指向测试假服务）
     api.ts                   端点函数
     localUri.ts              spotify:local 编解码
+    localIndex.ts            解析桌面端 local-files.bnk（doctor 用）
     types.ts
   sync/
     plan.ts                  Plan 类型 + 纯 diff（computePlaylistPlan）

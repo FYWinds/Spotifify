@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import type { Config } from "../config.ts";
 import { decryptNcm } from "../sources/local/ncm.ts";
-import type { SourceTrackRow } from "../state/repo.ts";
+import type { LocalExportRow, Repo, SourceTrackRow } from "../state/repo.ts";
 import { buildLocalUri } from "../spotify/localUri.ts";
 import { probeMp3, probeMp4DurationSec } from "./duration.ts";
 import { log } from "../util/log.ts";
@@ -93,18 +93,7 @@ export async function exportTrack(plan: ExportPlan, track: SourceTrackRow, cfg: 
  * that fails with EPERM/EBUSY while the client has it open (playing), which clears within seconds.
  */
 async function placeExport(partPath: string, exportPath: string): Promise<void> {
-  await withRetry(
-    async () => {
-      try {
-        await rm(exportPath, { force: true });
-      } catch (e) {
-        const code = (e as NodeJS.ErrnoException).code;
-        if (code === "EPERM" || code === "EBUSY") throw new RetryableError(`${code} replacing ${exportPath}`);
-        throw e;
-      }
-    },
-    { attempts: 6, baseMs: 500 },
-  );
+  await removeFile(exportPath);
   try {
     await link(partPath, exportPath);
   } catch (e) {
@@ -113,6 +102,38 @@ async function placeExport(partPath: string, exportPath: string): Promise<void> 
     log.warn("hard link unavailable, renaming instead; the desktop client will only index the file after a restart", { path: exportPath });
     await rename(partPath, exportPath);
   }
+}
+
+/** Delete with retries: the desktop client holds an exported file open while it plays it (EPERM/EBUSY on Windows). */
+async function removeFile(path: string): Promise<void> {
+  await withRetry(
+    async () => {
+      try {
+        await rm(path, { force: true });
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "EPERM" || code === "EBUSY") throw new RetryableError(`${code} removing ${path}`);
+        throw e;
+      }
+    },
+    { attempts: 6, baseMs: 500 },
+  );
+}
+
+/** Garbage-collect exports (file + record). A file that cannot be deleted keeps its record so the next run retries. Returns the number removed. */
+export async function removeExports(rows: readonly LocalExportRow[], repo: Repo): Promise<number> {
+  let removed = 0;
+  for (const e of rows) {
+    try {
+      await removeFile(e.exportPath);
+      repo.deleteExport(e.canonicalKey);
+      removed++;
+      log.info("removed export", { path: e.exportPath });
+    } catch (err) {
+      log.error("export removal failed", { path: e.exportPath, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return removed;
 }
 
 /** null: unparsable, or a VBR mp3 whose client duration is not predictable. */

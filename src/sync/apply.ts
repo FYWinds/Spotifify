@@ -30,6 +30,8 @@ export interface ApplySummary {
   unliked: number;
   exported: number;
   exportErrors: number;
+  /** exports garbage-collected after the playlist prune (--prune only) */
+  exportsRemoved: number;
 }
 
 /** Replace the whole playlist only when it saves real calls: more than this many moves AND more than a third of the list. */
@@ -38,7 +40,7 @@ const REPLACE_MOVE_RATIO = 1 / 3;
 
 /** Applies playlist and library changes. Exports run separately (`applyExports`) before planning. */
 export async function applyPlan(plan: Plan, deps: ApplyDeps): Promise<ApplySummary> {
-  const s: ApplySummary = { created: 0, renamed: 0, added: 0, pruned: 0, moved: 0, replaced: 0, liked: 0, unliked: 0, exported: 0, exportErrors: 0 };
+  const s: ApplySummary = { created: 0, renamed: 0, added: 0, pruned: 0, moved: 0, replaced: 0, liked: 0, unliked: 0, exported: 0, exportErrors: 0, exportsRemoved: 0 };
 
   for (const p of plan.playlists) await applyPlaylist(p, deps, s);
 
