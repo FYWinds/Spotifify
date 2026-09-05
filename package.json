@@ -1,9 +1,18 @@
 {
   "name": "spotifify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Idempotently sync Netease Cloud Music playlists and a local music library (incl. .ncm) to Spotify",
-  "keywords": ["spotify", "netease", "netease-cloud-music", "ncm", "playlist", "sync", "local-files", "bun"],
+  "keywords": [
+    "spotify",
+    "netease",
+    "netease-cloud-music",
+    "ncm",
+    "playlist",
+    "sync",
+    "local-files",
+    "bun"
+  ],
   "license": "MIT",
   "author": "FYWinds <i@fywinds.com>",
   "repository": {

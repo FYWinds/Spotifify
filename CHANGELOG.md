@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.1](https://github.com/FYWinds/Spotifify/compare/v0.1.0...v0.1.1) (2026-09-05)
+
+
+### Features
+
+* **release:** npm package and compressed archives ([ce7712d](https://github.com/FYWinds/Spotifify/commit/ce7712d6c1c06c9fe5272e4d7741f7bf86e40000))
+
+
+### Bug Fixes
+
+* **netease:** create anonymous_token before lib loads ([908b266](https://github.com/FYWinds/Spotifify/commit/908b266a327aeb2ee58ebf18b377748a72947168))
+
+
+### Documentation
+
+* AI authorship note and usage disclaimer ([bdf6890](https://github.com/FYWinds/Spotifify/commit/bdf6890b486bc63135ad7a96a2ce6464b201250f))
+
 ## [0.1.0](https://github.com/FYWinds/Spotifify/releases/tag/v0.1.0) (2026-09-04)
 
 ### Features
