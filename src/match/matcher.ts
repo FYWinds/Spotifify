@@ -17,6 +17,7 @@ const TRACK_REF = /^(?:spotify:track:|https?:\/\/open\.spotify\.com\/(?:intl-[a-
 /** Dedupes search results by id (and relinked origin id) and scores each one once. */
 class CandidatePool {
   private readonly seen = new Set<string>();
+  private readonly byId = new Map<string, Candidate>();
   private readonly candidates: Candidate[] = [];
 
   constructor(
@@ -37,9 +38,21 @@ class CandidatePool {
       if (scored.parts.artist < minArtist) continue;
       const c = toCandidate(t.id, t, scored);
       this.candidates.push(c);
+      this.byId.set(t.id, c);
+      if (t.linked_from) this.byId.set(t.linked_from.id, c);
       added.push(c);
     }
     return added;
+  }
+
+  /** Pooled candidates for these tracks, whichever query admitted them (an identity hit must count even for a track a text query saw first). */
+  known(tracks: SpotifyTrack[]): Candidate[] {
+    const out = new Set<Candidate>();
+    for (const t of tracks) {
+      const c = (t.id !== null ? this.byId.get(t.id) : undefined) ?? (t.linked_from !== undefined ? this.byId.get(t.linked_from.id) : undefined);
+      if (c) out.add(c);
+    }
+    return [...out];
   }
 
   sorted(): Candidate[] {
@@ -63,19 +76,24 @@ function toCandidate(id: string, t: SpotifyTrack, scored: { score: number; parts
 
 type Hit = { by: "isrc" | "fingerprint"; candidate: Candidate } | { by: "auto" };
 
+/** ISRCs for a local file (Chromaprint → AcoustID → MusicBrainz); replaceable so the decision path can be exercised without `fpcalc`. */
+export type IsrcLookup = (path: string, contentHash: string, cfg: Config["matching"], repo: Repo, now: number) => Promise<string[]>;
+
 export class Matcher {
   private readonly api: SpotifyApi;
   private readonly repo: Repo;
   private readonly cfg: Config;
   private readonly market: string;
   private readonly search: TrackSearch;
+  private readonly isrcLookup: IsrcLookup;
 
-  constructor(deps: { api: SpotifyApi; repo: Repo; cfg: Config; market: string }) {
+  constructor(deps: { api: SpotifyApi; repo: Repo; cfg: Config; market: string; isrcLookup?: IsrcLookup }) {
     this.api = deps.api;
     this.repo = deps.repo;
     this.cfg = deps.cfg;
     this.market = deps.market;
     this.search = new TrackSearch(deps.api, deps.repo, deps.cfg.matching, deps.market);
+    this.isrcLookup = deps.isrcLookup ?? isrcsByFingerprint;
   }
 
   /** Network searches spent by this matcher (cache hits excluded). */
@@ -92,10 +110,11 @@ export class Matcher {
     for (const q of queries) {
       const tracks = await this.search.search(q, now);
       const added = pool.add(tracks, true, q === bareTitle ? BARE_TITLE_MIN_ARTIST : 0);
-      if (added.length === 0) continue;
       if (q.startsWith("isrc:")) {
-        let best = added[0]!;
-        for (const c of added) if (c.score > best.score) best = c;
+        const hits = pool.known(tracks);
+        if (hits.length === 0) continue;
+        let best = hits[0]!;
+        for (const c of hits) if (c.score > best.score) best = c;
         return { by: isrcBy, candidate: best };
       }
       if (added.some((c) => passesAutoGate(c.score, c.parts, m))) return { by: "auto" };
@@ -114,7 +133,7 @@ export class Matcher {
     const bareTitle = track.artists.length > 0 ? queryTitle(track.title) : null;
     let hit = await this.runQueries(pool, this.search.queriesFor(track), bareTitle, "isrc", now);
     if (hit === null && track.file && m.fingerprint) {
-      const isrcs = await isrcsByFingerprint(track.file.path, track.file.contentHash, m, this.repo, now);
+      const isrcs = await this.isrcLookup(track.file.path, track.file.contentHash, m, this.repo, now);
       for (const isrc of isrcs) {
         hit = await this.runQueries(pool, [`isrc:${isrc}`], null, "fingerprint", now);
         if (hit !== null) break;
