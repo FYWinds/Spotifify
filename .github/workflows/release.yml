@@ -1,4 +1,4 @@
-name: Release binaries
+name: Release
 
 on:
   workflow_call:
@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build:
@@ -55,3 +56,29 @@ jobs:
         run: gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
       - name: Upload assets
         run: gh release upload "$TAG" out/spotifify-* out/SHA256SUMS --clobber
+
+  npm:
+    # OIDC trusted publishing (no token). npm validates the *calling* workflow's filename, so the
+    # trusted publisher on npmjs.com must name release-please.yml (automatic releases) and
+    # release.yml (manual dispatch). Skipped until the repository variable NPM_PUBLISH is "true".
+    if: vars.NPM_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest
+      - name: Skip if this version is already on npm
+        id: check
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if npm view "spotifify@$v" version >/dev/null 2>&1; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.check.outputs.skip != 'true'
+        run: npm publish --provenance --access public

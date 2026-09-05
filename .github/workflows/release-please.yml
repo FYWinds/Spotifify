@@ -20,7 +20,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  binaries:
+  release:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     uses: ./.github/workflows/release.yml
@@ -28,23 +28,4 @@ jobs:
       tag: ${{ needs.release-please.outputs.tag_name }}
     permissions:
       contents: write
-
-  npm:
-    # Enabled by the repository variable NPM_PUBLISH=true after npm trusted publishing is configured
-    # for this repo/workflow (package settings on npmjs.com); no token is stored anywhere.
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true' && vars.NPM_PUBLISH == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
       id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@latest
-      - run: npm publish --provenance --access public
