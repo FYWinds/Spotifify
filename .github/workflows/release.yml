@@ -1,0 +1,40 @@
+name: Release binaries
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Git tag of the release to attach binaries to
+        required: true
+        type: string
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Cross-compile
+        run: |
+          set -euo pipefail
+          for target in bun-windows-x64 bun-linux-x64 bun-linux-arm64 bun-darwin-arm64 bun-darwin-x64; do
+            bun run scripts/build.ts --target "$target" --outfile "dist/spotifify-${target#bun-}"
+          done
+          (cd dist && sha256sum spotifify-* > SHA256SUMS && ls -l)
+      - name: Ensure the GitHub release exists
+        run: gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
+      - name: Upload assets
+        run: gh release upload "$TAG" dist/spotifify-* dist/SHA256SUMS --clobber
