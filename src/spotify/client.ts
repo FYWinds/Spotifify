@@ -1,4 +1,4 @@
-import { log } from "../util/log.ts";
+import { localIso, log } from "../util/log.ts";
 import { RetryableError, withRetry } from "../util/retry.ts";
 import { AuthExpiredError, refreshTokens, type TokenStore } from "./auth.ts";
 import type { Paging, SpotifyTokens } from "./types.ts";
@@ -29,7 +29,7 @@ export class SpotifyRateLimitedError extends Error {
     readonly untilMs: number,
     path: string,
   ) {
-    super(`Spotify rate limited on ${path} until ${new Date(untilMs).toISOString()}`);
+    super(`Spotify rate limited on ${path} until ${localIso(new Date(untilMs))}`);
     this.name = "SpotifyRateLimitedError";
   }
 }

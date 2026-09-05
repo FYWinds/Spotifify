@@ -23,7 +23,7 @@ import { runReviewTui } from "./tui/index.ts";
 import { probeBinary } from "./util/bin.ts";
 import { copyToClipboard } from "./util/clipboard.ts";
 import { acquireLock } from "./util/lock.ts";
-import { configureLog, log } from "./util/log.ts";
+import { configureLog, localIso, log } from "./util/log.ts";
 
 const EXIT_ERROR = 1;
 const EXIT_AUTH = 3;
@@ -387,7 +387,7 @@ program
       }
       const last = c.repo.lastRun();
       if (last) {
-        console.log(`\nlast run: ${new Date(last.startedAt).toISOString()} ${last.ok === null ? "(running/aborted)" : last.ok ? "ok" : "FAILED"}`);
+        console.log(`\nlast run: ${localIso(new Date(last.startedAt))} ${last.ok === null ? "(running/aborted)" : last.ok ? "ok" : "FAILED"}`);
         if (last.ok && last.summary) printAwaiting((last.summary as SyncSummary).awaiting ?? []);
         if (last.ok === false && last.summary) console.log(`  ${JSON.stringify(last.summary)}`);
       }

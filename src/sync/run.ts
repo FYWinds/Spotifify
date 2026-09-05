@@ -16,7 +16,7 @@ import { MANAGED_DESCRIPTION, type SpotifyPlaylistItem } from "../spotify/types.
 import { parseLocalUri } from "../spotify/localUri.ts";
 import type { LocalExportRow, Repo, SourcePlaylistRow } from "../state/repo.ts";
 import { MAX_FILENAME, sanitizeFilename } from "../util/fs.ts";
-import { log } from "../util/log.ts";
+import { localIso, log } from "../util/log.ts";
 import { mapLimit } from "../util/retry.ts";
 import { applyExports, applyPlan, type ApplySummary } from "./apply.ts";
 import { removeExports } from "./export.ts";
@@ -206,7 +206,7 @@ async function match(deps: SyncDeps, opts: SyncOptions, now: number): Promise<Ma
   const storedBlock = Number(repo.metaGet(META_SEARCH_BLOCKED_UNTIL) ?? 0);
   if (storedBlock > now) {
     result.blockedUntil = storedBlock;
-    log.warn("Spotify search still rate-limited; skipping match phase", { until: new Date(storedBlock).toISOString(), due: due.length });
+    log.warn("Spotify search still rate-limited; skipping match phase", { until: localIso(new Date(storedBlock)), due: due.length });
     return result;
   }
   repo.metaSet(META_SEARCH_BLOCKED_UNTIL, null);
@@ -229,7 +229,7 @@ async function match(deps: SyncDeps, opts: SyncOptions, now: number): Promise<Ma
           stop = true;
           result.blockedUntil = e.untilMs;
           repo.metaSet(META_SEARCH_BLOCKED_UNTIL, String(e.untilMs));
-          log.warn("Spotify search quota exhausted; stopping match phase", { until: new Date(e.untilMs).toISOString() });
+          log.warn("Spotify search quota exhausted; stopping match phase", { until: localIso(new Date(e.untilMs)) });
         }
         return;
       }

@@ -16,9 +16,20 @@ export function configureLog(opts: { level?: Level; file?: string }): void {
   }
 }
 
+/** ISO 8601 in local time with the UTC offset (`2026-09-06T14:03:54-07:00`): readable where the user is, still unambiguous. */
+export function localIso(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const offset = -date.getTimezoneOffset();
+  const sign = offset < 0 ? "-" : "+";
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
+    `${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`
+  );
+}
+
 function emit(level: Level, msg: string, data?: unknown): void {
   if (ORDER[level] < ORDER[threshold]) return;
-  const line = `${new Date().toISOString()} ${level.toUpperCase().padEnd(5)} ${msg}${data === undefined ? "" : " " + JSON.stringify(data)}`;
+  const line = `${localIso(new Date())} ${level.toUpperCase().padEnd(5)} ${msg}${data === undefined ? "" : " " + JSON.stringify(data)}`;
   (level === "error" || level === "warn" ? console.error : console.log)(line);
   if (filePath) appendFileSync(filePath, line + "\n");
 }
