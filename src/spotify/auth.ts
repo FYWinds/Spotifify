@@ -48,7 +48,8 @@ async function postToken(form: Record<string, string>, previous?: SpotifyTokens)
     access_token: body.access_token,
     refresh_token: refresh,
     expires_at: Date.now() + body.expires_in * 1000 - EXPIRY_MARGIN_MS,
-    scope: body.scope ?? previous?.scope ?? SCOPES.join(" "),
+    // A refresh response may omit `scope` (or an older store may hold ""): the grant did not shrink, so keep what was known.
+    scope: body.scope || previous?.scope || SCOPES.join(" "),
   };
 }
 
@@ -110,12 +111,7 @@ export async function loginPkce(opts: { clientId: string; port: number; store: T
   }
 }
 
-/** PKCE refresh responses may omit `refresh_token`; the previous one is kept in that case. */
-export async function refreshTokens(clientId: string, refreshToken: string): Promise<SpotifyTokens> {
-  return postToken({ client_id: clientId, grant_type: "refresh_token", refresh_token: refreshToken }, {
-    access_token: "",
-    refresh_token: refreshToken,
-    expires_at: 0,
-    scope: "",
-  });
+/** PKCE refresh responses may omit `refresh_token` and `scope`; the previous values are kept in that case. */
+export async function refreshTokens(clientId: string, previous: SpotifyTokens): Promise<SpotifyTokens> {
+  return postToken({ client_id: clientId, grant_type: "refresh_token", refresh_token: previous.refresh_token }, previous);
 }

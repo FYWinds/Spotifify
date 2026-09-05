@@ -6,8 +6,8 @@ import type { SpotifyPlaylist, SpotifyPlaylistItem, SpotifyTrack } from "./types
 // `/me/library?uris=`; the legacy `/tracks` and `/me/tracks/contains` paths answer 403 for newer apps.
 const ITEM_FIELDS = "next,total,items(added_at,is_local,item(id,uri,name,is_local,duration_ms,artists(id,name),album(id,name)))";
 
-/** Playlist item batch limit for add/remove/replace. */
-const ITEMS_BATCH = 100;
+/** Playlist item batch limit for add/remove; also the most a single replace can hold. */
+export const ITEMS_BATCH = 100;
 /** `/me/library` batch limit (probed: 41+ uris → 400 "Too many uris requested"). */
 const LIBRARY_BATCH = 40;
 
@@ -92,8 +92,9 @@ export class SpotifyApi {
 
   /**
    * ≤100 per request. Catalog tracks are removed by URI; local files must be removed by position only
-   * (`/items` answers 400 "Invalid base62 id" for a `spotify:local:` URI). Positions are removed highest
-   * first with chained snapshot ids, so earlier indexes never shift underneath later batches.
+   * (`/items` answers 400 "Invalid base62 id" for a `spotify:local:` URI). Every position batch names the
+   * snapshot the positions were read from: Spotify resolves them against that snapshot, so batches never
+   * see each other's shifts (or a concurrent edit). Positions are still sent highest first.
    */
   async removePlaylistItems(id: string, items: Array<{ uri: string; positions?: number[] }>, snapshotId: string): Promise<string> {
     let snapshot = snapshotId;
@@ -101,7 +102,7 @@ export class SpotifyApi {
     const uris = items.filter((x) => x.positions === undefined).map((x) => ({ uri: x.uri }));
     for (const batch of chunk(positions, ITEMS_BATCH)) {
       const res = await this.client.request<{ snapshot_id: string }>("DELETE", `/v1/playlists/${id}/items`, {
-        body: { positions: batch, snapshot_id: snapshot },
+        body: { positions: batch, snapshot_id: snapshotId },
       });
       snapshot = res.snapshot_id;
     }
@@ -121,13 +122,11 @@ export class SpotifyApi {
     return res.snapshot_id;
   }
 
-  /** PUT the first ≤100 (which also clears the playlist), then append the rest. */
+  /** One atomic PUT (≤100 items: a longer list would need a follow-up POST that can fail half-way and lose the tail). */
   async replacePlaylistItems(id: string, uris: string[]): Promise<string> {
-    const res = await this.client.request<{ snapshot_id: string }>("PUT", `/v1/playlists/${id}/items`, {
-      body: { uris: uris.slice(0, ITEMS_BATCH) },
-    });
-    const rest = uris.slice(ITEMS_BATCH);
-    return rest.length === 0 ? res.snapshot_id : this.addPlaylistItems(id, rest);
+    if (uris.length > ITEMS_BATCH) throw new Error(`replacePlaylistItems: ${uris.length} items exceed the single-request limit of ${ITEMS_BATCH}`);
+    const res = await this.client.request<{ snapshot_id: string }>("PUT", `/v1/playlists/${id}/items`, { body: { uris } });
+    return res.snapshot_id;
   }
 
   /** ≤50 per request; result aligns with `ids` order. */

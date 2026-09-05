@@ -77,7 +77,9 @@ export class SpotifyClient {
           log.warn(`Spotify rate limited; waiting ${secs}s`, { method, path: url.pathname });
           throw new RetryableError(`429 on ${method} ${url.pathname}`, waitMs);
         }
-        if (res.status >= 500) throw new RetryableError(`${res.status} on ${method} ${url.pathname}`);
+        // A 5xx on a write may arrive after Spotify applied it (a re-sent POST would add twice, a re-sent
+        // reorder move twice), so only reads are retried; a failed write ends the run and the next one re-plans.
+        if (res.status >= 500 && method === "GET") throw new RetryableError(`${res.status} on ${method} ${url.pathname}`);
         throw new SpotifyHttpError(res.status, text, method, url.pathname);
       },
       { attempts: ATTEMPTS },
@@ -107,7 +109,7 @@ export class SpotifyClient {
     if (this.refreshing) return this.refreshing;
     const tokens = this.store.load();
     if (tokens === null) throw new AuthExpiredError();
-    this.refreshing = refreshTokens(this.clientId, tokens.refresh_token)
+    this.refreshing = refreshTokens(this.clientId, tokens)
       .then((fresh) => {
         this.store.save(fresh);
         return fresh;
