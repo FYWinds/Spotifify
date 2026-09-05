@@ -320,8 +320,7 @@ src/
     repo.ts                  类型化查询（source / match / export / managed / liked / cache）
   sources/
     types.ts                 SourcePlaylist / SourceTrack / canonicalKey()
-    netease/lib.ts           NeteaseCloudMusicApi 静态导入 shim（可打包）
-    netease/anonymousToken.ts  request.js 加载前置条件
+    netease/lib.ts           NeteaseCloudMusicApi 的可打包入口：先建 <tmp>/anonymous_token 再 require 各 module（Bun 先于 ESM 主体求值 CJS 依赖，静态 import 保证不了顺序）
     netease/client.ts        7 个接口的类型化封装 + 错误分类
     netease/auth.ts          扫码登录 / cookie 规范化
     netease/source.ts        pull 实现（按 trackUpdateTime 增量）
