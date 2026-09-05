@@ -1,5 +1,9 @@
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import type { Config } from "../config.ts";
+import { decryptNcm, readNcmMeta } from "../sources/local/ncm.ts";
 import type { Repo } from "../state/repo.ts";
 import { log } from "../util/log.ts";
 import { RetryableError, sleep, withRetry } from "../util/retry.ts";
@@ -55,8 +59,21 @@ async function runFpcalc(fpcalc: string, path: string): Promise<z.infer<typeof F
   return FpcalcOutput.parse(JSON.parse(stdout));
 }
 
+/** Chromaprint of a library file. fpcalc decodes with ffmpeg, which cannot open an encrypted .ncm container, so those are decrypted to a temp file first. */
+export async function chromaprint(fpcalc: string, path: string, contentHash: string): Promise<z.infer<typeof FpcalcOutput> | null> {
+  if (!path.toLowerCase().endsWith(".ncm")) return runFpcalc(fpcalc, path);
+  const { format } = await readNcmMeta(path);
+  const tmp = join(tmpdir(), `spotifify-fp-${contentHash.slice(0, 16)}.${format.toLowerCase() || "audio"}`);
+  try {
+    await decryptNcm(path, tmp);
+    return await runFpcalc(fpcalc, tmp);
+  } finally {
+    await rm(tmp, { force: true });
+  }
+}
+
 async function lookup(path: string, contentHash: string, cfg: Config["matching"], repo: Repo, now: number): Promise<string[]> {
-  const fp = await runFpcalc(cfg.fpcalc, path);
+  const fp = await chromaprint(cfg.fpcalc, path, contentHash);
   if (!fp) return [];
   const durationS = Math.round(fp.duration);
   const acoustid = await fetchJson(

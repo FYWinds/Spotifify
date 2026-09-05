@@ -289,7 +289,7 @@ program
     const onInterrupt = () => {
       // Match decisions are persisted per track, so aborting loses at most the in-flight searches.
       release?.();
-      console.error("\ninterrupted; progress so far is saved — rerun `spotifify sync` to continue");
+      console.error("\ninterrupted; progress so far is saved - rerun `spotifify sync` to continue");
       process.exit(130);
     };
     process.once("SIGINT", onInterrupt);
