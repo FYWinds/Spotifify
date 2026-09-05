@@ -12,7 +12,7 @@ import { NeteaseSource } from "../sources/netease/source.ts";
 import type { SourceKind, SourceTrack } from "../sources/types.ts";
 import type { SpotifyApi } from "../spotify/api.ts";
 import { SpotifyHttpError, SpotifyRateLimitedError } from "../spotify/client.ts";
-import { MANAGED_DESCRIPTION } from "../spotify/types.ts";
+import { MANAGED_DESCRIPTION, type SpotifyPlaylistItem } from "../spotify/types.ts";
 import { parseLocalUri } from "../spotify/localUri.ts";
 import type { LocalExportRow, Repo, SourcePlaylistRow } from "../state/repo.ts";
 import { sanitizeFilename } from "../util/fs.ts";
@@ -278,8 +278,11 @@ export async function buildPlan(deps: SyncDeps, opts: Pick<SyncOptions, "prune" 
 
     const remote = await resolveRemotePlaylist(sp, targetName, remotePlaylists, deps);
     let remoteItems: RemoteItem[] = [];
+    let snapshotId: string | null = null;
     if (remote) {
-      remoteItems = (await api.getPlaylistItems(remote.id)).map((it) => {
+      const listing = await listPlaylistItemsConsistently(api, remote.id);
+      snapshotId = listing.snapshotId;
+      remoteItems = listing.items.map((it) => {
         if (!it.item) return { uri: "", isLocal: false, stale: false };
         if (it.is_local || it.item.is_local) return { ...resolveRemoteLocalUri(it.item.uri, exports), isLocal: true };
         return { uri: it.item.uri, isLocal: false, stale: false };
@@ -292,6 +295,7 @@ export async function buildPlan(deps: SyncDeps, opts: Pick<SyncOptions, "prune" 
         sourceName: sp.name,
         targetName,
         spotify: remote,
+        snapshotId,
         desired,
         remote: remoteItems,
         managed: remote ? repo.managedUris(remote.id) : new Set<string>(),
@@ -321,6 +325,22 @@ async function savedFlags(api: SpotifyApi, ids: string[]): Promise<boolean[]> {
     log.warn("/me/tracks/contains is forbidden for this app; listing the whole library instead");
     const saved = await api.listSavedTrackIds();
     return ids.map((id) => saved.has(id));
+  }
+}
+
+/**
+ * Items plus the snapshot id they belong to. The listing is paginated and the snapshot endpoint is
+ * separate, so the listing is bracketed by two snapshot reads and retried while they differ; the
+ * snapshot is what position-based removals are validated against, so a wrong one must never be sent.
+ */
+async function listPlaylistItemsConsistently(api: SpotifyApi, id: string): Promise<{ items: SpotifyPlaylistItem[]; snapshotId: string }> {
+  for (let attempt = 1; ; attempt++) {
+    const before = await api.getPlaylistSnapshot(id);
+    const items = await api.getPlaylistItems(id);
+    const after = await api.getPlaylistSnapshot(id);
+    if (before === after) return { items, snapshotId: after };
+    if (attempt === 3) throw new Error(`playlist ${id} keeps changing while it is being read; retry later`);
+    log.warn("playlist changed while listing, retrying", { id, attempt });
   }
 }
 

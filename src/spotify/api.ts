@@ -70,6 +70,12 @@ export class SpotifyApi {
     return this.client.paginate<SpotifyPlaylistItem>(`/v1/playlists/${id}/items`, { limit: 50, fields: ITEM_FIELDS });
   }
 
+  /** Current snapshot id only (used to bracket an items listing). */
+  async getPlaylistSnapshot(id: string): Promise<string> {
+    const res = await this.client.request<{ snapshot_id: string }>("GET", `/v1/playlists/${id}`, { query: { fields: "snapshot_id" } });
+    return res.snapshot_id;
+  }
+
   /** ≤100 per request; `position` advances by batch size so the whole run lands contiguously. Returns the last snapshot_id. */
   async addPlaylistItems(id: string, uris: string[], position?: number): Promise<string> {
     let snapshot = "";

@@ -12,6 +12,7 @@ function base(over: Partial<PlaylistPlanInput>): PlaylistPlanInput {
     sourceName: "P",
     targetName: "P",
     spotify: { id: "pl", name: "P" },
+    snapshotId: "snap0",
     desired: [],
     remote: [],
     managed: new Set(),

@@ -118,15 +118,18 @@ async function applyPlaylist(p: PlaylistPlan, deps: ApplyDeps, s: ApplySummary):
       s.added += uris.length;
     }
     if (deps.prune && p.prune.length > 0) {
-      snapshot ??= (await api.getPlaylist(spotifyId))?.snapshot_id ?? null;
-      if (snapshot === null) throw new Error(`playlist ${spotifyId} vanished during apply`);
+      // Positions come from the planning-time listing, so they are validated against that snapshot
+      // (Spotify checks them against the snapshot given, not the current one). Adds only append.
+      const base = p.snapshotId ?? snapshot ?? (await api.getPlaylist(spotifyId))?.snapshot_id ?? null;
+      if (base === null) throw new Error(`playlist ${spotifyId} vanished during apply`);
       const items = p.prune.map((x) => (x.uri.startsWith("spotify:local:") ? { uri: x.uri, positions: x.positions } : { uri: x.uri }));
-      snapshot = await api.removePlaylistItems(spotifyId, items, snapshot);
+      snapshot = await api.removePlaylistItems(spotifyId, items, base);
       repo.removeManaged(spotifyId, p.prune.map((x) => x.uri));
       s.pruned += p.prune.length;
     }
     if (p.moves.length > 0) {
-      snapshot ??= (await api.getPlaylist(spotifyId))?.snapshot_id ?? null;
+      // Moves are computed on the post-add/post-prune order, so they chain from the latest write.
+      snapshot ??= p.snapshotId ?? (await api.getPlaylist(spotifyId))?.snapshot_id ?? null;
       if (snapshot === null) throw new Error(`playlist ${spotifyId} vanished during apply`);
       for (const m of p.moves) {
         snapshot = await api.reorderPlaylistItems(spotifyId, m.rangeStart, m.insertBefore, snapshot);

@@ -25,6 +25,8 @@ export interface PlaylistPlan {
   sourceName: string;
   /** null when the playlist must be created first */
   spotifyId: string | null;
+  /** snapshot the remote listing (and therefore `prune[].positions`) belongs to; null when created */
+  snapshotId: string | null;
   create: { name: string } | null;
   rename: { from: string; to: string } | null;
   /** spotify:track URIs to POST, in desired order */
@@ -82,6 +84,8 @@ export interface PlaylistPlanInput {
   targetName: string;
   /** existing remote playlist (already verified to exist), or null */
   spotify: { id: string; name: string } | null;
+  /** snapshot id the `remote` listing was taken at (null when `spotify` is null) */
+  snapshotId: string | null;
   /** ordered, deduped by uri */
   desired: DesiredItem[];
   /** current remote order; local uris already canonicalized via `resolveRemoteLocalUri` */
@@ -128,6 +132,7 @@ export function computePlaylistPlan(input: PlaylistPlanInput): PlaylistPlan {
       sourcePlaylistId: input.sourcePlaylistId,
       sourceName: input.sourceName,
       spotifyId: null,
+      snapshotId: null,
       create: { name: input.targetName },
       rename: null,
       adds: desired.filter((d) => d.kind === "spotify").map((d) => d.uri),
@@ -192,6 +197,7 @@ export function computePlaylistPlan(input: PlaylistPlanInput): PlaylistPlan {
     sourcePlaylistId: input.sourcePlaylistId,
     sourceName: input.sourceName,
     spotifyId: input.spotify.id,
+    snapshotId: input.snapshotId,
     create: null,
     rename: input.spotify.name === input.targetName ? null : { from: input.spotify.name, to: input.targetName },
     adds,

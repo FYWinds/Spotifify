@@ -27,6 +27,20 @@ interface FakePlaylist {
   description: string;
   snapshot: number;
   items: string[];
+  /** items as they were when each snapshot id was handed out; DELETE validates positions against these */
+  history: Map<string, string[]>;
+}
+
+/** Snapshot id for the playlist's current state, remembering that state (tests mutate `items` directly). */
+function snapshotOf(p: FakePlaylist): string {
+  const id = `s${p.snapshot}`;
+  p.history.set(id, [...p.items]);
+  return id;
+}
+
+function bump(p: FakePlaylist): string {
+  p.snapshot++;
+  return snapshotOf(p);
 }
 
 class FakeSpotify {
@@ -39,6 +53,9 @@ class FakeSpotify {
   searchQuota: number | null = null;
   /** emulate development-mode apps for which /me/tracks/contains answers 403 */
   containsForbidden = false;
+  /** applied to the playlist on the snapshot read that closes an items listing (see the race test) */
+  editAfterListing: ((p: FakePlaylist) => void) | null = null;
+  private listed = false;
   private seq = 0;
   server: ReturnType<typeof Bun.serve> | null = null;
 
@@ -83,7 +100,7 @@ class FakeSpotify {
   }
 
   private playlistObject(p: FakePlaylist): SpotifyPlaylist {
-    return { id: p.id, name: p.name, description: p.description, snapshot_id: `s${p.snapshot}`, owner: { id: "me" } };
+    return { id: p.id, name: p.name, description: p.description, snapshot_id: snapshotOf(p), owner: { id: "me" } };
   }
 
   private async handle(req: Request): Promise<Response> {
@@ -121,7 +138,7 @@ class FakeSpotify {
       return json({ items: [...this.playlists.values()].map((p) => this.playlistObject(p)), next: null, total: this.playlists.size });
     }
     if (path === "/v1/me/playlists" && method === "POST") {
-      const p: FakePlaylist = { id: `pl${++this.seq}`, name: String(body.name), description: String(body.description ?? ""), snapshot: 0, items: [] };
+      const p: FakePlaylist = { id: `pl${++this.seq}`, name: String(body.name), description: String(body.description ?? ""), snapshot: 0, items: [], history: new Map() };
       this.playlists.set(p.id, p);
       return json(this.playlistObject(p), 201);
     }
@@ -131,7 +148,17 @@ class FakeSpotify {
       const p = this.playlists.get(pl[1]!);
       if (!p) return json({ error: { status: 404, message: "not found" } }, 404);
       if (!pl[2]) {
-        if (method === "GET") return json(this.playlistObject(p));
+        if (method === "GET") {
+          const res = json(this.playlistObject(p));
+          if (this.editAfterListing && this.listed) {
+            // a "user edit" landing right after the tool bracketed its listing with this snapshot read
+            this.editAfterListing(p);
+            bump(p);
+            this.editAfterListing = null;
+          }
+          this.listed = false;
+          return res;
+        }
         if (method === "PUT") {
           p.name = String(body.name ?? p.name);
           return new Response(null, { status: 200 });
@@ -146,6 +173,7 @@ class FakeSpotify {
           });
           const nextOffset = offset + limit;
           const next = nextOffset < p.items.length ? `${url.origin}${path}?limit=${limit}&offset=${nextOffset}` : null;
+          if (next === null) this.listed = true;
           return json({ items, next, total: p.items.length });
         }
         if (method === "POST") {
@@ -153,8 +181,7 @@ class FakeSpotify {
           if (uris.some((u) => u.startsWith("spotify:local:"))) return json({ error: { status: 400, message: "Invalid track uri" } }, 400);
           const pos = typeof body.position === "number" ? body.position : p.items.length;
           p.items.splice(pos, 0, ...uris);
-          p.snapshot++;
-          return json({ snapshot_id: `s${p.snapshot}` }, 201);
+          return json({ snapshot_id: bump(p) }, 201);
         }
         if (method === "PUT") {
           if (Array.isArray(body.uris)) {
@@ -168,14 +195,24 @@ class FakeSpotify {
             if (before > start) before -= len;
             p.items.splice(before, 0, ...moved);
           }
-          p.snapshot++;
-          return json({ snapshot_id: `s${p.snapshot}` });
+          return json({ snapshot_id: bump(p) });
         }
         if (method === "DELETE") {
-          if (body.snapshot_id !== `s${p.snapshot}`) return json({ error: { status: 400, message: "stale snapshot" } }, 400);
+          // Like the real API: the snapshot given is the one positions are validated against, even
+          // when the playlist has changed since; the matching occurrences are removed from the current state.
+          const then = p.history.get(String(body.snapshot_id));
+          if (!then) return json({ error: { status: 400, message: "stale snapshot" } }, 400);
           const drop = new Set<number>();
+          const occurrence = (list: string[], i: number) => list.slice(0, i).filter((u) => u === list[i]).length;
           if (Array.isArray(body.positions)) {
-            for (const i of body.positions as number[]) drop.add(i);
+            for (const i of body.positions as number[]) {
+              const uri = then[i];
+              if (uri === undefined) return json({ error: { status: 400, message: "Invalid position" } }, 400);
+              let k = occurrence(then, i);
+              p.items.forEach((u, j) => {
+                if (u === uri && k-- === 0) drop.add(j);
+              });
+            }
           } else {
             for (const s of body.items as Array<{ uri: string }>) {
               // the real endpoint parses every uri as a track id; local files can only be removed by position
@@ -184,8 +221,7 @@ class FakeSpotify {
             }
           }
           p.items = p.items.filter((_, i) => !drop.has(i));
-          p.snapshot++;
-          return json({ snapshot_id: `s${p.snapshot}` });
+          return json({ snapshot_id: bump(p) });
         }
       }
     }
@@ -332,6 +368,19 @@ describe.skipIf(!haveFfmpeg)("end-to-end sync against a fake Spotify", () => {
     const { summary } = await sync();
     expect(summary.awaiting).toEqual([]);
     expect(playlist().items).toEqual(["spotify:track:t1", "spotify:track:t2", "spotify:local:Artist+C:Album:Unknown+Song:2"]);
+  });
+
+  test("a concurrent edit after the listing does not make position-based prune delete the wrong item", async () => {
+    fake.addTrack("t9", "Nine", "Someone", "Other", 1000);
+    playlist().items.unshift("spotify:local:Artist+C:Album:Unknown+Song:0"); // stale entry at position 0
+    // The tool reads snapshot, items, snapshot; the user's edit lands right after that.
+    fake.editAfterListing = (p) => p.items.unshift("spotify:track:t9");
+    const { plan } = await sync({ prune: true });
+    expect(plan.playlists[0]?.prune).toEqual([{ uri: "spotify:local:Artist+C:Album:Unknown+Song:0", positions: [0] }]);
+    expect(plan.playlists[0]?.moves).toEqual([]);
+    // position 0 of the planning snapshot was the stale entry, not the user's new first track
+    expect(playlist().items).toEqual(["spotify:track:t9", "spotify:track:t1", "spotify:track:t2", "spotify:local:Artist+C:Album:Unknown+Song:2"]);
+    playlist().items.shift(); // restore the shared fixture for the next test
   });
 
   test("foreign items are never removed and stay at the tail", async () => {
