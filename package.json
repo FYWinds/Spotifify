@@ -1,6 +1,6 @@
 {
   "name": "spotifify",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Idempotently sync Netease Cloud Music playlists and a local music library (incl. .ncm) to Spotify",
   "keywords": [
