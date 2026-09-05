@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.3](https://github.com/FYWinds/Spotifify/compare/v0.1.2...v0.1.3) (2026-09-05)
+
+
+### Bug Fixes
+
+* **match:** let a fingerprint hit decide for a pooled track ([75c2717](https://github.com/FYWinds/Spotifify/commit/75c27178f16b277a5062ff3aff5c396bbc36ec4b))
+* **sources:** unreadable files and partial pulls are not deletions ([0fb80a7](https://github.com/FYWinds/Spotifify/commit/0fb80a7a3af3a03d06543e118be1cb7171fd5880))
+* **spotify:** make playlist writes safe to interrupt and retry ([5882336](https://github.com/FYWinds/Spotifify/commit/5882336ec47f4c8ededef8712312864f7d1d7f16))
+* **sync:** never prune beyond what the run reconciles ([fd1d732](https://github.com/FYWinds/Spotifify/commit/fd1d732fa06cfcff5b855f60ff90c68414d41bb9))
+
 ## [0.1.2](https://github.com/FYWinds/Spotifify/compare/v0.1.1...v0.1.2) (2026-09-05)
 
 

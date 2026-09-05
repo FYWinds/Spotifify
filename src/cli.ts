@@ -44,7 +44,7 @@ interface Ctx {
 const program = new Command()
   .name("spotifify")
   .description("Sync Netease Cloud Music playlists and a local library to Spotify")
-  .version("0.1.2") // x-release-please-version
+  .version("0.1.3") // x-release-please-version
   .option("--config <path>", "config file (default: <state-dir>/config.toml)")
   .option("--state-dir <dir>", "state directory (default: ~/.spotifify or $SPOTIFIFY_STATE_DIR)")
   .option("--log-file <path>", "append log lines to this file")
