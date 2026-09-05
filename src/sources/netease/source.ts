@@ -78,10 +78,17 @@ export class NeteaseSource implements Source {
       }
 
       const tracks: SourceTrack[] = [];
+      const omitted: string[] = [];
       for (const id of ids) {
         const t = known.get(id) ?? fetched.get(id);
         if (t) tracks.push(t);
-        else log.warn("netease song_detail omitted a track", { playlist: summary.name, id });
+        else omitted.push(id);
+      }
+      if (omitted.length > 0) {
+        // Songs the detail endpoint left out were never known, so nothing is lost yet; but the playlist must not be
+        // recorded as pulled at this version, or the cache would serve the short list until the playlist changes.
+        log.warn("netease song_detail omitted tracks; the playlist will be pulled again next run", { playlist: summary.name, omitted: omitted.length, ids: omitted.slice(0, 5) });
+        playlist.sourceUpdatedAt = undefined;
       }
       log.info("netease playlist pulled", { name: summary.name, tracks: tracks.length, fetched: fetched.size, cached: known.size });
       playlists.push({ playlist, tracks });

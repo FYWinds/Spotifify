@@ -35,26 +35,26 @@ export class NeteaseAuthError extends Error {
 const LoginStatusBody = z.object({
   data: z.object({ profile: z.object({ userId: z.number(), nickname: z.string().default("") }).nullish() }).optional(),
 });
+// Fields a pull cannot do without (`playlist`, `trackIds`) are required: a shape change must fail the run, not
+// read as "the user has no playlists / the playlist is empty" and delete everything downstream.
 const UserPlaylistBody = z.object({
   more: z.boolean().default(false),
-  playlist: z
-    .array(
-      z.object({
-        id: z.number(),
-        name: z.string(),
-        creator: z.object({ userId: z.number() }).nullish(),
-        userId: z.number().optional(),
-        specialType: z.number().default(0),
-        trackCount: z.number().default(0),
-        updateTime: z.number().default(0),
-        trackUpdateTime: z.number().optional(),
-      }),
-    )
-    .default([]),
+  playlist: z.array(
+    z.object({
+      id: z.number(),
+      name: z.string(),
+      creator: z.object({ userId: z.number() }).nullish(),
+      userId: z.number().optional(),
+      specialType: z.number().default(0),
+      trackCount: z.number().default(0),
+      updateTime: z.number().default(0),
+      trackUpdateTime: z.number().optional(),
+    }),
+  ),
 });
 const PlaylistDetailBody = z.object({
   playlist: z.object({
-    trackIds: z.array(z.object({ id: z.number() })).default([]),
+    trackIds: z.array(z.object({ id: z.number() })),
     updateTime: z.number().default(0),
     trackUpdateTime: z.number().optional(),
   }),

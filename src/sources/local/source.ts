@@ -89,17 +89,26 @@ export class LocalSource implements Source {
 
   private async track(file: ScannedFile): Promise<SourceTrack | null> {
     const cached = this.cache.get(file.path);
-    if (cached?.file !== undefined && cached.file.size === file.size && cached.file.mtimeMs === file.mtimeMs) {
-      const { id: _id, canonicalKey: _key, lastSeenAt: _seen, ...track } = cached;
-      return track;
-    }
+    if (cached?.file !== undefined && cached.file.size === file.size && cached.file.mtimeMs === file.mtimeMs) return stripRow(cached);
     try {
       const contentHash = await hashFile(file.path);
       const meta = await describe(file.path, this.cfg.filename_pattern);
       return { kind: "local", externalId: file.path, ...meta, file: { path: file.path, contentHash, size: file.size, mtimeMs: file.mtimeMs } };
     } catch (e) {
-      log.warn(`skipping unreadable file ${file.path}: ${e instanceof Error ? e.message : String(e)}`);
+      // A file that cannot be read right now (half-downloaded, locked, damaged) is not a file that left the
+      // library: the previous row stands until it can be read again, so the track is never treated as removed.
+      const error = e instanceof Error ? e.message : String(e);
+      if (cached?.file !== undefined) {
+        log.warn(`cannot read ${file.path}; keeping its previous metadata: ${error}`);
+        return stripRow(cached);
+      }
+      log.warn(`skipping unreadable file ${file.path}: ${error}`);
       return null;
     }
   }
+}
+
+function stripRow(row: SourceTrackRow): SourceTrack {
+  const { id: _id, canonicalKey: _key, lastSeenAt: _seen, ...track } = row;
+  return track;
 }
