@@ -7,6 +7,12 @@ on:
         description: Git tag of the release to attach binaries to
         required: true
         type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing git tag to (re)build binaries for
+        required: true
+        type: string
   push:
     tags: ["v*"]
 
