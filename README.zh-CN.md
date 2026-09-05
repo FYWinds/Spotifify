@@ -8,6 +8,8 @@
 
 把**网易云音乐歌单**和**本地音乐库**（含 `.ncm`）幂等地同步到 **Spotify**，可放进定时任务。Spotify 曲库里有的歌匹配后镜像成歌单（并加入"已点赞的歌曲"）；找不到的导出成 Spotify 桌面端的*本地文件*，并给出可直接粘贴的 URI。
 
+> **本项目由 AI 编写。** 代码由 AI 编程代理在人工指导下完成，只在一个真实账号上实测过。**请谨慎使用：** 它会写入你的 Spotify 曲库，先用 `sync --dry-run` 看计划，确认无误前不要开 `--prune`，无法重建的数据请先备份。按现状提供，不做任何担保（[MIT](LICENSE)）。
+
 ```
 网易云歌单 ────┐                 ┌─ 匹配 ─► spotify:track:…  ─► 镜像歌单 + 已点赞的歌曲
               ├─ 规范键 ────────┤
@@ -24,29 +26,37 @@
 - **懂配额**：Development Mode 的 Spotify 应用 `/search` 有每日配额。搜索有缓存、每次运行有预算，遇到长时间 `429` 直接停止匹配阶段（截止时间持久化）而不是干等；已匹配的部分照常写入歌单。
 - **单文件二进制**（`bun build --compile`）和 Windows 任务计划注册脚本。
 
-## 环境要求
+## 安装
 
-- [Bun](https://bun.sh) ≥ 1.2（从源码运行），或者直接下载 [Releases](https://github.com/FYWinds/Spotifify/releases) 里的二进制。
+| 方式 | 命令 |
+|---|---|
+| Release 压缩包 | 从 [Releases](https://github.com/FYWinds/Spotifify/releases) 下载 `spotifify-<平台>.zip` / `.tar.xz`，解压后把 `spotifify` 放进 `PATH`。 |
+| npm（需要 [Bun](https://bun.sh) ≥ 1.2） | `bun install -g spotifify`，或一次性运行：`bunx spotifify sync --dry-run` |
+| 源码 | `git clone https://github.com/FYWinds/Spotifify && cd Spotifify && bun install`，然后 `bun run spotifify …` |
+
+另外需要：
+
 - `ffmpeg` 在 `PATH` 里（导出/转码）。只有开启声纹时才需要 `fpcalc`。
 - 在 [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) 建一个应用，Redirect URI 填 `http://127.0.0.1:8765/callback`（端口 = `spotify.redirect_port`）。只需要 Client ID（Authorization Code + PKCE）。
 - 本地文件需要 Spotify **桌面端**（手机上播放需要 Premium 且和桌面端在同一 Wi‑Fi，见下文）。
 
+二进制内嵌了 Bun 运行时（解压后约 70–90 MB），靠压缩包控制下载体积——UPX 这类可执行文件压缩器会破坏 Bun 内嵌的模块图，所以没有使用。
+
 ## 快速开始
 
 ```sh
-bun install
-bun run spotifify init                 # 生成 ~/.spotifify/config.toml
+spotifify init                 # 生成 ~/.spotifify/config.toml
 #   编辑：spotify.client_id、netease.include_playlists、local.dirs、export.dir
-bun run spotifify auth spotify         # 打开浏览器登录（PKCE）
-bun run spotifify auth netease         # 终端扫码，或 --cookie "MUSIC_U=…"
-bun run spotifify doctor               # 检查配置 / 数据库 / ffmpeg / 登录状态
-bun run spotifify sync --dry-run       # 只打印计划
-bun run spotifify sync
-bun run spotifify pending --copy       # 本地文件 URI 进剪贴板；到 Spotify 桌面端对应歌单里粘贴
-bun run spotifify review               # 处理低置信度匹配
+spotifify auth spotify         # 打开浏览器登录（PKCE）
+spotifify auth netease         # 终端扫码，或 --cookie "MUSIC_U=…"
+spotifify doctor               # 检查配置 / 数据库 / ffmpeg / 登录状态
+spotifify sync --dry-run       # 只打印计划
+spotifify sync
+spotifify pending --copy       # 本地文件 URI 进剪贴板；到 Spotify 桌面端对应歌单里粘贴
+spotifify review               # 处理低置信度匹配
 ```
 
-用二进制时把 `bun run spotifify` 换成 `spotifify`。
+源码方式把 `spotifify …` 换成 `bun run spotifify …`。
 
 状态目录是 `~/.spotifify`（`config.toml`、`state.db`、日志）；可用 `--state-dir` 或 `SPOTIFIFY_STATE_DIR` 覆盖。
 
@@ -99,8 +109,8 @@ Spotify Web API 不能把本地文件*加入*歌单，但能读取、重排、�
 ## 定时运行
 
 ```powershell
-bun run spotifify task install --time 03:00            # 在仓库目录里跑 `bun run src/cli.ts sync`
-bun run spotifify task install --exe D:\tools\spotifify.exe
+spotifify task install --time 03:00            # 源码方式：跑 `bun run src/cli.ts sync`；npm 方式：跑安装好的包
+spotifify task install --exe D:\tools\spotifify.exe
 ```
 
 运行之间用 pid 锁（`sync.lock`）串行化；Ctrl+C 会释放锁。其他平台用 cron 跑 `spotifify sync --log-file …`。

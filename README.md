@@ -8,6 +8,8 @@ English | [简体中文](README.zh-CN.md)
 
 Idempotent, schedulable sync of **NetEase Cloud Music playlists** and a **local music library** (including `.ncm`) to **Spotify**. Tracks that exist on Spotify are matched and mirrored into playlists (and Liked Songs); everything else is exported as Spotify desktop *local files* with ready-to-paste URIs.
 
+> **Written by an AI.** This project was produced by an AI coding agent under human direction and has been exercised against one real account. **Use it with care:** it writes to your Spotify library, so start with `sync --dry-run`, leave `--prune` off until you trust the plan, and back up anything you cannot re-create. Provided as-is, without warranty ([MIT](LICENSE)).
+
 ```
 NetEase playlists ─┐                 ┌─ match ─► spotify:track:…  ─► mirrored playlists + Liked Songs
                    ├─ canonical keys ┤
@@ -24,29 +26,37 @@ Local library ─────┘  (netease id /  └─ unmatched ─► ffmpeg 
 - **Rate-limit aware**: Development-mode Spotify apps have a daily `/search` quota. Searches are cached, budgeted per run and a long `429` stops the match phase (persisted deadline) instead of sleeping; playlist writes still happen for what is already matched.
 - **Single binary** (`bun build --compile`) and a Windows Task Scheduler helper for nightly runs.
 
-## Requirements
+## Install
 
-- [Bun](https://bun.sh) ≥ 1.2 (to run from source), or a binary from [Releases](https://github.com/FYWinds/Spotifify/releases).
+| Method | Command |
+|---|---|
+| Release archive | Download `spotifify-<platform>.zip` / `.tar.xz` from [Releases](https://github.com/FYWinds/Spotifify/releases), unpack, put `spotifify` on `PATH`. |
+| npm (needs [Bun](https://bun.sh) ≥ 1.2) | `bun install -g spotifify` — or one-off: `bunx spotifify sync --dry-run` |
+| From source | `git clone https://github.com/FYWinds/Spotifify && cd Spotifify && bun install`, then `bun run spotifify …` |
+
+Also needed:
+
 - `ffmpeg` on `PATH` (exports/transcoding). `fpcalc` only if you enable fingerprinting.
 - A Spotify app from the [Developer Dashboard](https://developer.spotify.com/dashboard): add the Redirect URI `http://127.0.0.1:8765/callback` (port = `spotify.redirect_port`). Only the Client ID is needed (Authorization Code + PKCE).
 - The Spotify **desktop** client for local files (playing them on mobile needs Premium and the same Wi‑Fi network; see below).
 
+The binaries embed the Bun runtime (~70–90 MB unpacked); the archives are what keep downloads small — UPX-style executable packers break Bun's embedded module graph, so they are not used.
+
 ## Quick start
 
 ```sh
-bun install
-bun run spotifify init                 # writes ~/.spotifify/config.toml
+spotifify init                 # writes ~/.spotifify/config.toml
 #   edit: spotify.client_id, netease.include_playlists, local.dirs, export.dir
-bun run spotifify auth spotify         # opens the browser (PKCE)
-bun run spotifify auth netease         # QR code in the terminal, or --cookie "MUSIC_U=…"
-bun run spotifify doctor               # config / db / ffmpeg / auth checks
-bun run spotifify sync --dry-run       # prints the plan
-bun run spotifify sync
-bun run spotifify pending --copy       # local-file URIs → clipboard; paste into the playlist in Spotify desktop
-bun run spotifify review               # resolve low-confidence matches
+spotifify auth spotify         # opens the browser (PKCE)
+spotifify auth netease         # QR code in the terminal, or --cookie "MUSIC_U=…"
+spotifify doctor               # config / db / ffmpeg / auth checks
+spotifify sync --dry-run       # prints the plan
+spotifify sync
+spotifify pending --copy       # local-file URIs → clipboard; paste into the playlist in Spotify desktop
+spotifify review               # resolve low-confidence matches
 ```
 
-With a release binary replace `bun run spotifify` with `spotifify`.
+From a source checkout use `bun run spotifify …` instead of `spotifify …`.
 
 State lives in `~/.spotifify` (`config.toml`, `state.db`, logs); override with `--state-dir` or `SPOTIFIFY_STATE_DIR`.
 
@@ -99,8 +109,8 @@ Set `local.mirror_playlist = false` if you only want local files to supply audio
 ## Scheduling
 
 ```powershell
-bun run spotifify task install --time 03:00            # runs `bun run src/cli.ts sync` from the checkout
-bun run spotifify task install --exe D:\tools\spotifify.exe
+spotifify task install --time 03:00            # from a checkout: runs `bun run src/cli.ts sync`; from npm: the installed package
+spotifify task install --exe D:\tools\spotifify.exe
 ```
 
 Runs are serialised by a pid lock (`sync.lock`); Ctrl+C releases it. On other platforms use cron with `spotifify sync --log-file …`.
