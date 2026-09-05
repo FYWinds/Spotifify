@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.4](https://github.com/FYWinds/Spotifify/compare/v0.1.3...v0.1.4) (2026-09-05)
+
+
+### Features
+
+* **review:** separate matcher-decided unmatched from user-kept local ([a97ec4c](https://github.com/FYWinds/Spotifify/commit/a97ec4c10f3bcc710b70bd4a414e4f25299f4911))
+
+
+### Bug Fixes
+
+* **log:** timestamps in local time with UTC offset ([9c12f83](https://github.com/FYWinds/Spotifify/commit/9c12f839158603d0cb585a1c8f519945085977ad))
+* **match:** decrypt .ncm before fingerprinting ([a44edc1](https://github.com/FYWinds/Spotifify/commit/a44edc1e4555bc1b129aa112bfa0bb042a4d6c70))
+
 ## [0.1.3](https://github.com/FYWinds/Spotifify/compare/v0.1.2...v0.1.3) (2026-09-05)
 
 
