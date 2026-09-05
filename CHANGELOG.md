@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.2](https://github.com/FYWinds/Spotifify/compare/v0.1.1...v0.1.2) (2026-09-05)
+
+
+### Features
+
+* **doctor:** check the client's local-file index ([bdc099b](https://github.com/FYWinds/Spotifify/commit/bdc099bfa54abaae2a9f75b4d804fd9fd41f90eb))
+* **sync:** prune superseded exports with --prune ([4db0559](https://github.com/FYWinds/Spotifify/commit/4db05590f9c318e57703a5f8cdcc7be96850a58e))
+
+
+### Bug Fixes
+
+* **sync:** prune against the listing snapshot ([8c1634a](https://github.com/FYWinds/Spotifify/commit/8c1634a91b2228c4ff4916e42e621ddc54c91737))
+
 ## [0.1.1](https://github.com/FYWinds/Spotifify/compare/v0.1.0...v0.1.1) (2026-09-05)
 
 
