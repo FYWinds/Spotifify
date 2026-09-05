@@ -15,6 +15,7 @@ import { SpotifyClient } from "../src/spotify/client.ts";
 import type { SpotifyPlaylist, SpotifyPlaylistItem, SpotifyTrack } from "../src/spotify/types.ts";
 import { openDatabase } from "../src/state/db.ts";
 import { Repo } from "../src/state/repo.ts";
+import { PlaylistDriftError } from "../src/sync/apply.ts";
 import { runSync } from "../src/sync/run.ts";
 import { probeBinary } from "../src/util/bin.ts";
 import { buildNcm } from "./helpers/ncm.ts";
@@ -109,7 +110,7 @@ class FakeSpotify {
     const method = req.method;
     const json = (v: unknown, status = 200) => Response.json(v, { status });
     const body = method === "GET" ? {} : ((await req.json().catch(() => ({}))) as Record<string, unknown>);
-    if (method !== "GET") this.writes.push(`${method} ${path}`);
+    if (method !== "GET") this.writes.push(`${method} ${path}${method === "PUT" && Array.isArray(body.uris) ? " replace" : ""}`);
 
     if (path === "/v1/me") return json({ id: "me", country: "US" });
 
@@ -260,6 +261,14 @@ async function makeAudio(path: string, tags: { title: string; artist: string; al
   if ((await proc.exited) !== 0) throw new Error(`ffmpeg fixture failed: ${await new Response(proc.stderr).text()}`);
 }
 
+/** The standard three-file library: two songs the fake catalog knows (t1, t2) and one it does not. */
+async function makeLibrary(musicDir: string): Promise<void> {
+  await Bun.write(join(musicDir, ".keep"), "");
+  await makeAudio(join(musicDir, "Artist A - Song One.mp3"), { title: "Song One", artist: "Artist A", album: "Album" }, ["-c:a", "libmp3lame", "-b:a", "64k"]);
+  await makeAudio(join(musicDir, "Artist B - Song Two.mp3"), { title: "Song Two", artist: "Artist B", album: "Album" }, ["-c:a", "libmp3lame", "-b:a", "64k"]);
+  await makeAudio(join(musicDir, "Artist C - Unknown Song.flac"), { title: "Unknown Song", artist: "Artist C", album: "Album" }, ["-c:a", "flac"]);
+}
+
 const haveFfmpeg = (await probeBinary("ffmpeg", ["-version"])) !== null;
 
 describe.skipIf(!haveFfmpeg)("end-to-end sync against a fake Spotify", () => {
@@ -281,10 +290,7 @@ describe.skipIf(!haveFfmpeg)("end-to-end sync against a fake Spotify", () => {
     fake.addTrack("t1", "Song One", "Artist A", "Album", 2000);
     fake.addTrack("t2", "Song Two", "Artist B", "Album", 2000);
 
-    await Bun.write(join(musicDir, ".keep"), "");
-    await makeAudio(join(musicDir, "Artist A - Song One.mp3"), { title: "Song One", artist: "Artist A", album: "Album" }, ["-c:a", "libmp3lame", "-b:a", "64k"]);
-    await makeAudio(join(musicDir, "Artist B - Song Two.mp3"), { title: "Song Two", artist: "Artist B", album: "Album" }, ["-c:a", "libmp3lame", "-b:a", "64k"]);
-    await makeAudio(join(musicDir, "Artist C - Unknown Song.flac"), { title: "Unknown Song", artist: "Artist C", album: "Album" }, ["-c:a", "flac"]);
+    await makeLibrary(musicDir);
 
     cfg = ConfigSchema.parse({
       spotify: { client_id: "fake" },
@@ -577,5 +583,176 @@ describe.skipIf(!haveFfmpeg)("netease track backed by a local .ncm (mirror_playl
     const again = await runSync({ cfg, repo, api }, { dryRun: false, prune: false, skipMatch: false });
     expect(again.summary.matched.searched).toBe(0);
     expect(again.summary.apply?.exported).toBe(0);
+  });
+});
+
+describe.skipIf(!haveFfmpeg)("prune stays within what this run reconciles", () => {
+  const root = mkdtempSync(join(tmpdir(), "spotifify-scope-"));
+  const musicDir = join(root, "music");
+  const exportDir = join(root, "export");
+  const fake = new FakeSpotify();
+  let cfg: Config;
+  let repo: Repo;
+  let api: SpotifyApi;
+
+  const sync = (over: Partial<{ prune: boolean; playlist: string }> = {}) =>
+    runSync({ cfg, repo, api }, { dryRun: false, prune: over.prune ?? false, playlist: over.playlist, skipMatch: false });
+  const library = () => [...fake.playlists.values()].find((p) => p.name === "Local Library")!;
+  const localUri = "spotify:local:Artist+C:Album:Unknown+Song:2";
+  const exportFile = join(exportDir, "Artist C - Unknown Song.mp3");
+
+  beforeAll(async () => {
+    process.env.SPOTIFIFY_SPOTIFY_API = fake.start();
+    fake.addTrack("t1", "Song One", "Artist A", "Album", 2000);
+    fake.addTrack("t2", "Song Two", "Artist B", "Album", 2000);
+    fake.addTrack("t9", "Song Nine", "Someone", "Other", 1000);
+    await makeLibrary(musicDir);
+    cfg = ConfigSchema.parse({
+      spotify: { client_id: "fake" },
+      netease: { enabled: false },
+      local: { dirs: [musicDir], like_matched: true },
+      export: { dir: exportDir },
+      matching: { search_min_interval_ms: 0 },
+    });
+    repo = new Repo(openDatabase(join(root, "state")));
+    repo.setAuth("spotify", { access_token: "tok", refresh_token: "ref", expires_at: Date.now() + 3_600_000, scope: "" }, Date.now());
+    // A second mirrored playlist standing in for a netease pull (the source is disabled, so the rows persist across runs).
+    repo.savePull(
+      "netease",
+      [{ playlist: { kind: "netease", externalId: "p1", name: "NE" }, tracks: [{ kind: "netease", externalId: "42", title: "Song Nine", artists: ["Someone"], album: "Other", durationMs: 1000, neteaseId: 42, aliases: [] }] }],
+      Date.now(),
+    );
+    api = new SpotifyApi(new SpotifyClient({ clientId: "fake", store: { load: () => repo.getAuth("spotify"), save: () => {} } }));
+    await sync();
+    library().items.push(localUri); // the user pasted the export
+    await sync(); // records the paste as a reference to the export
+    expect(library().items).toEqual(["spotify:track:t1", "spotify:track:t2", localUri]);
+    expect([...fake.saved].sort()).toEqual(["t1", "t2", "t9"]);
+  });
+
+  afterAll(() => {
+    fake.stop();
+    repo.db.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a re-search that only turns up a review candidate keeps the pasted entry and the export", async () => {
+    fake.addTrack("t3", "Unknown Song (Live)", "Artist C", "Album", 2000); // same core title, version tag differs: review, not auto
+    repo.db.run("UPDATE match SET last_search_at = 0 WHERE status = 'local'"); // retry_unmatched_after_days elapsed
+    repo.db.run("DELETE FROM search_cache");
+    const { plan } = await sync({ prune: true });
+    expect(repo.listMatches("review")).toHaveLength(1);
+    expect(plan.playlists.find((p) => p.sourceName === "Local Library")?.prune).toEqual([]);
+    expect(plan.exportGc).toEqual([]);
+    expect(library().items).toEqual(["spotify:track:t1", "spotify:track:t2", localUri]);
+    expect(existsSync(exportFile)).toBe(true);
+    // what `spotifify review` does when the user keeps the file
+    const m = repo.listMatches("review")[0]!;
+    repo.upsertMatch({ ...m, status: "local", decidedBy: "user", decidedAt: Date.now() });
+  });
+
+  test("--playlist never unlikes what another mirrored playlist wants", async () => {
+    fake.writes.length = 0;
+    const { summary } = await sync({ playlist: "Local Library", prune: true });
+    expect(summary.plan.unlikes).toBe(0);
+    expect(fake.saved.has("t9")).toBe(true);
+    expect(fake.writes.filter((w) => w.includes("/v1/me/library"))).toEqual([]);
+  });
+
+  test("an export still referenced from a playlist retired from mirroring is kept", async () => {
+    cfg.local.mirror_playlist = false;
+    const { plan } = await sync({ prune: true });
+    expect(plan.playlists.map((p) => p.sourceName)).toEqual(["NE"]);
+    expect(plan.exportGc).toEqual([]);
+    expect(existsSync(exportFile)).toBe(true);
+    expect(repo.listExports()).toHaveLength(1);
+    expect(library().items).toContain(localUri);
+  });
+
+  test("with nothing mirrored, --prune keeps every like and export", async () => {
+    repo.savePull("netease", [], Date.now()); // the netease side now lists no playlist (a typo in include_playlists, say)
+    const saved = [...fake.saved].sort();
+    fake.writes.length = 0;
+    const { summary } = await sync({ prune: true });
+    expect(summary.plan).toMatchObject({ prune: 0, unlikes: 0, exportGc: 0 });
+    expect([...fake.saved].sort()).toEqual(saved);
+    expect(fake.writes).toEqual([]);
+    expect(existsSync(exportFile)).toBe(true);
+  });
+
+  test("101 stale entries are removed across two batches even when the user inserts at the head meanwhile", async () => {
+    cfg.local.mirror_playlist = true;
+    const stale = "spotify:local:Artist+C:Album:Unknown+Song:0";
+    library().items = [...Array.from({ length: 101 }, () => stale), "spotify:track:t1", "spotify:track:t2", localUri];
+    fake.editAfterListing = (p) => p.items.unshift("spotify:track:t9");
+    const { plan } = await sync({ prune: true });
+    expect(plan.playlists.find((p) => p.sourceName === "Local Library")?.prune[0]?.positions).toHaveLength(101);
+    expect(library().items).toEqual(["spotify:track:t9", "spotify:track:t1", "spotify:track:t2", localUri]);
+  });
+});
+
+describe("reorder strategy on large playlists", () => {
+  const root = mkdtempSync(join(tmpdir(), "spotifify-large-"));
+  const fake = new FakeSpotify();
+  let cfg: Config;
+  let repo: Repo;
+  let api: SpotifyApi;
+
+  const sync = () => runSync({ cfg, repo, api }, { dryRun: false, prune: false, skipMatch: true });
+  const playlist = (name: string) => [...fake.playlists.values()].find((p) => p.name === name)!;
+  const uris = (n: number) => Array.from({ length: n }, (_, i) => `spotify:track:n${i + 1}`);
+
+  beforeAll(() => {
+    process.env.SPOTIFIFY_SPOTIFY_API = fake.start();
+    cfg = ConfigSchema.parse({ spotify: { client_id: "fake" }, netease: { enabled: false, like_matched: false }, local: { enabled: false } });
+    repo = new Repo(openDatabase(join(root, "state")));
+    repo.setAuth("spotify", { access_token: "tok", refresh_token: "ref", expires_at: Date.now() + 3_600_000, scope: "" }, Date.now());
+    const now = Date.now();
+    const track = (i: number) => ({ kind: "netease" as const, externalId: String(i), title: `Song ${i}`, artists: ["A"], album: "Album", durationMs: 1000, neteaseId: i, aliases: [] });
+    for (let i = 1; i <= 120; i++) {
+      fake.addTrack(`n${i}`, `Song ${i}`, "A", "Album", 1000);
+      repo.upsertMatch({ canonicalKey: `netease:${i}`, status: "matched", spotifyId: `n${i}`, spotifyUri: `spotify:track:n${i}`, score: 1, decidedBy: "user", candidates: [], decidedAt: now, lastSearchAt: now, searchCount: 1 });
+    }
+    repo.savePull(
+      "netease",
+      [
+        { playlist: { kind: "netease", externalId: "big", name: "Big" }, tracks: Array.from({ length: 120 }, (_, i) => track(i + 1)) },
+        { playlist: { kind: "netease", externalId: "small", name: "Small" }, tracks: Array.from({ length: 60 }, (_, i) => track(i + 1)) },
+      ],
+      now,
+    );
+    api = new SpotifyApi(new SpotifyClient({ clientId: "fake", store: { load: () => repo.getAuth("spotify"), save: () => {} } }));
+  });
+
+  afterAll(() => {
+    fake.stop();
+    repo.db.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a list that fits one request is replaced atomically; a longer one is moved, never replaced piecewise", async () => {
+    await sync();
+    expect(playlist("Big").items).toEqual(uris(120));
+    expect(playlist("Small").items).toEqual(uris(60));
+    playlist("Big").items.reverse();
+    playlist("Small").items.reverse();
+    fake.writes.length = 0;
+    const { summary } = await sync();
+    expect(summary.apply?.replaced).toBe(1);
+    expect(fake.writes.filter((w) => w.endsWith(" replace"))).toEqual([`PUT /v1/playlists/${playlist("Small").id}/items replace`]);
+    expect(summary.apply?.moved).toBeGreaterThan(100);
+    expect(playlist("Big").items).toEqual(uris(120));
+    expect(playlist("Small").items).toEqual(uris(60));
+  });
+
+  test("a playlist edited between listing and apply is refused before anything is written to it", async () => {
+    fake.addTrack("x1", "Foreign", "B", "Album", 1000);
+    playlist("Big").items.reverse();
+    fake.editAfterListing = (p) => p.items.unshift("spotify:track:x1");
+    fake.writes.length = 0;
+    await expect(sync()).rejects.toBeInstanceOf(PlaylistDriftError);
+    expect(fake.writes).toEqual([]);
+    await sync();
+    expect(playlist("Big").items).toEqual([...uris(120), "spotify:track:x1"]);
   });
 });

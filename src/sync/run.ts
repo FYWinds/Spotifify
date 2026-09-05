@@ -15,7 +15,7 @@ import { SpotifyHttpError, SpotifyRateLimitedError } from "../spotify/client.ts"
 import { MANAGED_DESCRIPTION, type SpotifyPlaylistItem } from "../spotify/types.ts";
 import { parseLocalUri } from "../spotify/localUri.ts";
 import type { LocalExportRow, Repo, SourcePlaylistRow } from "../state/repo.ts";
-import { sanitizeFilename } from "../util/fs.ts";
+import { MAX_FILENAME, sanitizeFilename } from "../util/fs.ts";
 import { log } from "../util/log.ts";
 import { mapLimit } from "../util/retry.ts";
 import { applyExports, applyPlan, type ApplySummary } from "./apply.ts";
@@ -93,8 +93,12 @@ export async function runSync(deps: SyncDeps, opts: SyncOptions): Promise<SyncRe
       apply.exported = exported.exported;
       apply.exportErrors = exported.errors;
     }
-    // After apply: the playlist entries pointing at these files were pruned above, so the files can go.
-    if (apply && opts.prune) apply.exportsRemoved = await removeExports(plan.exportGc, repo);
+    // After apply: the playlist entries pointing at these files were pruned above, so the files can go —
+    // unless some playlist outside this plan still holds an entry for them.
+    if (apply && opts.prune) {
+      const referenced = repo.localUriReferences();
+      apply.exportsRemoved = await removeExports(plan.exportGc.filter((e) => !referenced.has(e.localUri)), repo);
+    }
     const summary: SyncSummary = {
       pulled,
       matched,
@@ -137,14 +141,22 @@ export function planExportsOnly(repo: Repo, cfg: Config, opts: Pick<SyncOptions,
 /**
  * Exported files no longer needed: the track left every mirrored playlist, or it has a Spotify match
  * now. Only meaningful for a full run — with `--playlist`/`--source` the other playlists' exports
- * would look unneeded — and the remote entries pointing at these files are pruned in the same run
- * (they are `owned`), so nothing in a playlist is left pointing at a deleted file.
+ * would look unneeded — and never when nothing is mirrored (a config slip must not delete everything).
+ * An export whose entry sits in a playlist outside `planned` (retired from mirroring, or filtered out)
+ * is kept: only the playlists in this plan prune their entries in the same run.
  */
-export function planExportGc(repo: Repo, cfg: Config, opts: Pick<SyncOptions, "source" | "playlist">): LocalExportRow[] {
+export function planExportGc(repo: Repo, cfg: Config, opts: Pick<SyncOptions, "source" | "playlist">, planned: ReadonlySet<string>): LocalExportRow[] {
   if (opts.source || opts.playlist) return [];
-  const needed = selectedKeys(repo, cfg, opts);
-  const local = new Set(repo.listMatches("local").map((m) => m.canonicalKey));
-  return repo.listExports().filter((e) => !needed.has(e.canonicalKey) || !local.has(e.canonicalKey));
+  if (selectedSourcePlaylists(repo, cfg, {}).length === 0) return [];
+  const needed = selectedKeys(repo, cfg, {});
+  // `review` keeps its export: a candidate that still needs a human must not undo a paste (see desiredItems)
+  const keep = new Set([...repo.listMatches("local"), ...repo.listMatches("review")].map((m) => m.canonicalKey));
+  const referenced = repo.localUriReferences();
+  return repo.listExports().filter((e) => {
+    if (needed.has(e.canonicalKey) && keep.has(e.canonicalKey)) return false;
+    const refs = referenced.get(e.localUri);
+    return refs === undefined || refs.every((id) => planned.has(id));
+  });
 }
 
 // ---- pull -------------------------------------------------------------------
@@ -261,38 +273,24 @@ export async function buildPlan(deps: SyncDeps, opts: Pick<SyncOptions, "prune" 
   const me = await api.me();
   const remotePlaylists = (await api.listMyPlaylists()).filter((p) => p.owner.id === me.id);
   const exports = repo.listExports();
+  const exportByKey = new Map(exports.map((e) => [e.canonicalKey, e] as const));
 
-  const sourcePlaylists = selectedSourcePlaylists(repo, cfg, opts);
+  const mirrored = selectedSourcePlaylists(repo, cfg, {});
+  const selected = new Set(selectedSourcePlaylists(repo, cfg, opts).map((p) => p.id));
 
   const playlists: PlaylistPlan[] = [];
+  /** ids the playlists this run acts on want liked → saved if not yet */
   const likeDesired = new Set<string>();
+  /** ids any mirrored playlist wants liked → never pruned, whatever `--playlist`/`--source` selected */
+  const likeNeeded = new Set<string>();
 
-  for (const sp of sourcePlaylists) {
+  for (const sp of mirrored) {
+    const { desired, likes } = desiredItems(repo, cfg, sp, exportByKey);
+    for (const id of likes) likeNeeded.add(id);
+    if (!selected.has(sp.id)) continue;
+    for (const id of likes) likeDesired.add(id);
+
     const targetName = cfg.sync.playlist_prefix + sp.name;
-    const tracks = repo.playlistTracks(sp.id);
-    const matches = repo.matchesForKeys(tracks.map((t) => t.canonicalKey));
-    const exportByKey = new Map(exports.map((e) => [e.canonicalKey, e] as const));
-    const likeThis = sp.kind === "netease" ? cfg.netease.like_matched : cfg.local.like_matched;
-
-    const desired: DesiredItem[] = [];
-    const seen = new Set<string>();
-    for (const t of tracks) {
-      const m = matches.get(t.canonicalKey);
-      if (!m) continue;
-      let item: DesiredItem | null = null;
-      if (m.status === "matched" && m.spotifyUri && m.spotifyId) {
-        item = { uri: m.spotifyUri, kind: "spotify", canonicalKey: t.canonicalKey };
-        if (likeThis) likeDesired.add(m.spotifyId);
-      } else if (m.status === "local") {
-        const e = exportByKey.get(t.canonicalKey);
-        if (e) item = { uri: e.localUri, kind: "local", canonicalKey: t.canonicalKey };
-      }
-      if (item && !seen.has(item.uri)) {
-        seen.add(item.uri);
-        desired.push(item);
-      }
-    }
-
     const remote = await resolveRemotePlaylist(sp, targetName, remotePlaylists, deps);
     let remoteItems: RemoteItem[] = [];
     let snapshotId: string | null = null;
@@ -321,15 +319,53 @@ export async function buildPlan(deps: SyncDeps, opts: Pick<SyncOptions, "prune" 
     );
   }
 
-  // Likes: everything desired that is not already saved; prune tool-liked ids no longer desired.
+  // Likes: everything desired that is not already saved; prune tool-liked ids no mirrored playlist wants any
+  // more. With nothing mirrored there is nothing to reconcile against, so nothing is pruned.
   const likeIds = [...likeDesired];
   const saved = await savedFlags(api, likeIds);
   const likes = {
     add: likeIds.filter((_, i) => !saved[i]),
-    prune: [...repo.likedIds()].filter((id) => !likeDesired.has(id)),
+    prune: mirrored.length === 0 ? [] : [...repo.likedIds()].filter((id) => !likeNeeded.has(id)),
   };
+  if (mirrored.length === 0 && (repo.likedIds().size > 0 || exports.length > 0)) {
+    log.warn("no playlist is mirrored (check netease.include_playlists / local.mirror_playlist); keeping every tool-liked track and export", {
+      liked: repo.likedIds().size,
+      exports: exports.length,
+    });
+  }
 
-  return { playlists, likes, exports: exportPlans, exportGc: planExportGc(repo, cfg, opts), reviewPending: repo.countMatches().review };
+  const planned = new Set<string>();
+  for (const p of playlists) if (p.spotifyId !== null) planned.add(p.spotifyId);
+  return { playlists, likes, exports: exportPlans, exportGc: planExportGc(repo, cfg, opts, planned), reviewPending: repo.countMatches().review };
+}
+
+/** What one source playlist wants on Spotify, in source order and deduped by uri, plus the ids it wants liked. */
+function desiredItems(repo: Repo, cfg: Config, sp: SourcePlaylistRow, exportByKey: ReadonlyMap<string, LocalExportRow>): { desired: DesiredItem[]; likes: string[] } {
+  const tracks = repo.playlistTracks(sp.id);
+  const matches = repo.matchesForKeys(tracks.map((t) => t.canonicalKey));
+  const likeThis = sp.kind === "netease" ? cfg.netease.like_matched : cfg.local.like_matched;
+  const desired: DesiredItem[] = [];
+  const likes: string[] = [];
+  const seen = new Set<string>();
+  for (const t of tracks) {
+    const m = matches.get(t.canonicalKey);
+    if (!m) continue;
+    let item: DesiredItem | null = null;
+    if (m.status === "matched" && m.spotifyUri && m.spotifyId) {
+      item = { uri: m.spotifyUri, kind: "spotify", canonicalKey: t.canonicalKey };
+      if (likeThis) likes.push(m.spotifyId);
+    } else if (m.status === "local" || m.status === "review") {
+      // `review` keeps the export already in place: a candidate that still needs a human (a re-search after
+      // retry_unmatched_after_days, say) must not undo the user's paste. Only `local` gets a new export.
+      const e = exportByKey.get(t.canonicalKey);
+      if (e) item = { uri: e.localUri, kind: "local", canonicalKey: t.canonicalKey };
+    }
+    if (item && !seen.has(item.uri)) {
+      seen.add(item.uri);
+      desired.push(item);
+    }
+  }
+  return { desired, likes };
 }
 
 /** Which of `ids` are already liked. `/me/tracks/contains` is 403 for some development-mode apps; then list the library instead. */
@@ -399,9 +435,14 @@ function planExports(repo: Repo, localKeys: string[], exports: LocalExportRow[],
     // An export is current when the source is unchanged and its recorded identity is complete
     // (rows written before the duration segment was known cannot match anything the client indexes).
     if (!force && existing && existing.contentHash === t.file.contentHash && parseLocalUri(existing.localUri)?.durationSec !== null) continue;
-    let base = sanitizeFilename(`${t.artists.join(", ") || "Unknown Artist"} - ${t.title}`);
+    const raw = `${t.artists.join(", ") || "Unknown Artist"} - ${t.title}`;
+    let base = sanitizeFilename(raw);
     if (!existing) {
-      for (let n = 2; usedNames.has(base.toLowerCase()); n++) base = sanitizeFilename(`${t.artists.join(", ") || "Unknown Artist"} - ${t.title} (${n})`);
+      // The suffix is appended after truncation, so a name at the length limit still gets a distinct one.
+      for (let n = 2; usedNames.has(base.toLowerCase()); n++) {
+        const suffix = ` (${n})`;
+        base = sanitizeFilename(raw, MAX_FILENAME - suffix.length) + suffix;
+      }
     } else {
       base = existing.exportPath.replace(/\.[^.\\/]+$/, "").replace(/^.*[\\/]/, "");
     }

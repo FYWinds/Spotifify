@@ -37,11 +37,13 @@ export interface PlaylistPlan {
   prune: Array<{ uri: string; positions: number[] }>;
   /** remote items not managed by this tool; never removed, kept at the tail */
   foreign: string[];
+  /** owned local entries that resolve to a desired export: the user's paste landed, so the export is referenced from this playlist */
+  linked: string[];
   /** minimal move sequence to reach desired order (after adds, and prune when enabled) */
   moves: Move[];
   /** full target order (after adds/prune) — used by the replace-all fast path */
   targetOrder: string[];
-  /** when true, apply may replace the whole playlist instead of moving (no local items involved) */
+  /** when true, apply may replace the whole playlist instead of moving (no local or unresolved items involved) */
   replaceAllowed: boolean;
 }
 
@@ -71,6 +73,7 @@ export interface Plan {
 }
 
 export interface RemoteItem {
+  /** empty when Spotify returned the entry without an item (unresolvable): it keeps its position but is never touched */
   uri: string;
   isLocal: boolean;
   /**
@@ -142,6 +145,7 @@ export function computePlaylistPlan(input: PlaylistPlanInput): PlaylistPlan {
       awaiting: desired.filter((d) => d.kind === "local"),
       prune: [],
       foreign: [],
+      linked: [],
       moves: [],
       targetOrder: desired.filter((d) => d.kind === "spotify").map((d) => d.uri),
       replaceAllowed: false,
@@ -151,11 +155,17 @@ export function computePlaylistPlan(input: PlaylistPlanInput): PlaylistPlan {
   const remoteSet = new Set(remote.map((r) => r.uri));
   const adds = desired.filter((d) => d.kind === "spotify" && !remoteSet.has(d.uri)).map((d) => d.uri);
   const awaiting = desired.filter((d) => d.kind === "local" && !remoteSet.has(d.uri));
+  const linked = desired.filter((d) => d.kind === "local" && remoteSet.has(d.uri)).map((d) => d.uri);
 
   const prune: PlaylistPlan["prune"] = [];
   const pruneByUri = new Map<string, number[]>();
   const foreign: string[] = [];
+  let unresolved = false;
   remote.forEach((r, i) => {
+    if (r.uri === "") {
+      unresolved = true;
+      return;
+    }
     if (desiredSet.has(r.uri)) return;
     if (managed.has(r.uri) || r.owned) {
       let positions = pruneByUri.get(r.uri);
@@ -207,8 +217,9 @@ export function computePlaylistPlan(input: PlaylistPlanInput): PlaylistPlan {
     awaiting,
     prune,
     foreign,
+    linked,
     moves,
     targetOrder,
-    replaceAllowed: !anyLocal,
+    replaceAllowed: !anyLocal && !unresolved,
   };
 }

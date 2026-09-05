@@ -67,7 +67,7 @@ State lives in `~/.spotifify` (`config.toml`, `state.db`, logs); override with `
 | `init [--force\|--upgrade]` | Write the config template; `--upgrade` merges options added in newer versions into your file (values kept, `.bak` written). |
 | `doctor` | Check config, state db, `ffmpeg`/`fpcalc`, token scopes, search-quota deadline, and the desktop client's local-files index (exports it never indexed or indexed with another duration — the two causes of grey rows). |
 | `auth spotify` / `auth netease [--cookie …]` | Log in. |
-| `sync [--dry-run] [--prune] [--source netease\|local] [--playlist NAME] [--skip-match]` | Pull → match → export → plan → apply → report. `--prune` also removes superseded local entries and exported files no longer needed. Exit code `3` = re-authenticate. |
+| `sync [--dry-run] [--prune] [--source netease\|local] [--playlist NAME] [--skip-match]` | Pull → match → export → plan → apply → report. `--prune` also removes superseded local entries and exported files no longer needed — never beyond what the run can account for: with `--playlist`/`--source` nothing is unliked that another mirrored playlist wants, exports still referenced from a playlist outside the run are kept, and a run that mirrors no playlist at all prunes nothing. Exit code `3` = re-authenticate. |
 | `review` | Ink TUI: `j/k` move, `1-9`/`Enter` pick a candidate, `/` custom search, `p` paste a Spotify URL/URI, `o`/`O` open candidate/source in the browser, `l` keep as local file, `s` skip, `u` undo, `?` help. |
 | `status` | Match counts, playlist mappings, last run. |
 | `unmatched [--status local\|review\|all] [--tsv]` | Tracks without a Spotify match and the local file that backs them. |

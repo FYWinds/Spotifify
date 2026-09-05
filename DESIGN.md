@@ -190,25 +190,28 @@ present   = desired ∩ remote
 toAdd     = desired.spotify − remote                  # POST /items，100/批，追加到末尾
 awaiting  = desired.local − remote                    # 无法 API 添加 → pending paste 列表
 stale     = remote − desired
-  ├ managed_item 里有（工具加的）或 owned 本地项 → prune 候选（--prune 才执行；本地项用 positions + 列表时的 snapshot_id 删，API 按该快照校验位置，规划到执行之间用户在客户端动过歌单也不会删错行）
-  └ 都不是（人加的曲库歌 / 别人的本地文件）→ foreign，保留在尾部，仅报告
+  ├ managed_item 里有（工具加的）或 owned 本地项 → prune 候选（--prune 才执行；本地项用 positions + 列表时的 snapshot_id 删，**每一批都带同一个列表快照**，API 按该快照解析位置，批与批之间、规划到执行之间用户在客户端动过歌单都不会删错行）
+  └ 都不是（人加的曲库歌 / 别人的本地文件 / API 没给 item 的条目）→ foreign，保留在尾部，仅报告
+linked    = desired.local ∩ remote                    # 已粘贴的本地项 → managed_item 记为该歌单对导出文件的引用
 targetOrder = desired.filter(present ∪ toAdd) ++ stale(保持现有相对顺序)
 moves     = reorderPlan(currentOrder, targetOrder)    # 见 6.4
-likes     = (∪ 各来源 like_matched=true 歌单的 matched spotify_id) − remoteLiked   # PUT /me/tracks 50/批
-unlikes   = liked(工具加的) − desired 全集             # --prune 才执行
+likes     = (∪ 本次选中的 like_matched=true 歌单的 matched spotify_id) − remoteLiked   # PUT /me/library 40/批
+unlikes   = liked(工具加的) − (∪ **所有**镜像歌单想要的 spotify_id)   # --prune 才执行；--playlist/--source 只缩小 likes，不放大 unlikes；没有任何镜像歌单时不做
 exports   = status=local ∧ 有本地文件 ∧ 无 local_export 或 content_hash 变化
-exportGc  = local_export − (status=local ∧ 属于镜像歌单)   # --prune 才执行，在 apply 之后（指向这些文件的 owned 条目已先被删）；带 --playlist/--source 的运行不做
+exportGc  = local_export − (status∈{local,review} ∧ 属于镜像歌单) − (managed_item 里仍被本计划外的歌单引用的)   # --prune 才执行，在 apply 之后再按引用过滤一次；带 --playlist/--source 或没有镜像歌单的运行不做
 creates   = 无 spotify_playlist 映射，或映射的 spotify_id 已 404 / 不在 /me/playlists
 renames   = 来源歌单改名
 ```
 
 "来源为准重加"由 `toAdd` 天然覆盖：用户在 Spotify 端删掉的会再次出现在 `desired − remote`。
 
-`managed_item` 只在工具成功 add 之后写入；Liked 也一样——先 `GET /me/tracks/contains`，本来就 liked 的不入 `liked` 表，因此永不被 unlike。
+`managed_item` 只在工具成功 add 之后写入；Liked 也一样——先 `GET /me/library/contains`，本来就 liked 的不入 `liked` 表，因此永不被 unlike。本地项的 `managed_item` 行含义不同：它记录"这个歌单里现在有指向该导出文件的条目"，每次 apply 后按远端实际情况整体重写，导出文件只在没有任何歌单再引用它时才删——歌单退出镜像（`mirror_playlist=false`、从 `include_playlists` 去掉）后它的导出文件保留，因为远端歌单还指着它们。
+
+**删除只针对本次能对账的范围。** 取消喜欢和导出 GC 的"不再需要"以全部镜像歌单为基准，不以本次 `--playlist/--source` 选中的子集为基准；镜像歌单集合为空（配置写错、来源拉空）时两者都不做并告警。`review` 状态沿用已有导出：到期重搜只找到需要人工复核的候选时，已粘贴的条目和文件不动，等复核结果。来源读取失败（文件损坏、`song_detail` 漏返回）不算删除：本地文件沿用上次的元数据行，网易云歌单不记为已拉取、下次重拉。
 
 ### 6.4 严格顺序：最小移动重排
 
-`PUT /playlists/{id}/tracks` 的 `range_start/insert_before/snapshot_id` 每次只能搬一段。用 LIS：保留 `current` 中相对顺序已正确的最长子序列，其余元素逐个移动，移动数 = n − |LIS|，每次移动链式使用返回的 `snapshot_id`。首建时按 desired 顺序批量 POST，之后增量同步通常 0–几次移动。当歌单里**没有本地项**、移动数 > 5 且 > n/3 时改用整表 `PUT uris`（100/批 + 追加）——本地项无法用该接口写回，因此含本地项时禁用。
+`PUT /playlists/{id}/items` 的 `range_start/insert_before/snapshot_id` 每次只能搬一段。用 LIS：保留 `current` 中相对顺序已正确的最长子序列，其余元素逐个移动，移动数 = n − |LIS|，每次移动链式使用返回的 `snapshot_id`。首建时按 desired 顺序批量 POST，之后增量同步通常 0–几次移动。当歌单里**没有本地项**、总数 ≤ 100、移动数 > 5 且 > n/3 时改用一次整表 `PUT uris`——一次请求原子完成；超过 100 首只能 PUT + 追加 POST，中断会丢掉尾部（含用户自加的），所以不用，改走移动。本地项无法用该接口写回，因此含本地项时也禁用。移动和整表替换都基于列表时的顺序、又没有 API 校验，所以有移动的歌单在写入前先核对 `snapshot_id`，变了就抛 `PlaylistDriftError`（该歌单一字未动，重跑即可）；按位置删除由 API 按快照校验，不需要这一步。
 
 ### 6.5 Export（`export.ts`）
 
@@ -227,8 +230,8 @@ renames   = 来源歌单改名
 ## 7. Spotify 客户端（`src/spotify`）
 
 * **鉴权**：Authorization Code + PKCE（无需 client secret）。用户在 Developer Dashboard 建 app，Redirect URI `http://127.0.0.1:{redirect_port}/callback`。`spotifify auth spotify` 起本地 HTTP 监听、打开浏览器（Windows 用 `rundll32 url.dll,FileProtocolHandler`，`cmd /c start` 会把 `&` 当命令分隔符截断 URL）、换 token，存 `auth` 表。access token 过期或 401 时用 refresh token 刷新并回写。Scopes：`playlist-read-private playlist-modify-private playlist-modify-public user-library-read user-library-modify user-read-private`（最后一个是 `/me.country` 与按市场搜索的前提，缺了 `/search` 返回 403 Insufficient client scope；CLI 启动时校验已存 token 的 scope）。`market = "from_token"` 在启动时经 `/me.country` 解析成具体国家码。
-* **HTTP**：Bun `fetch` 薄封装：自动分页、`429` 按 `Retry-After` 退避（≤ 120 s）、5xx 指数重试。**Development Mode 应用的 `/search` 有每日配额**，超出后 429 的 `Retry-After` ≈ 24 h：此时抛 `SpotifyRateLimitedError`，match 阶段停止、截止时间写入 `meta.spotify_search_blocked_until`，plan/apply 照常处理已匹配部分；截止前的后续运行直接跳过 match。为避免撞配额，每次运行有搜索预算 `max_searches_per_run`（缓存命中不计）、每首歌最多 `max_queries_per_track` 个查询、并发 `search_concurrency` 与最小间隔 `search_min_interval_ms`。不引入官方 SDK（其 token 策略面向浏览器，对 CLI 刷新流程不友好；所需端点 < 15 个）。
-* 使用端点（2025 起 Spotify 对新应用只开放新路径，旧路径 `/users/{id}/playlists`、`/playlists/{id}/tracks`、`/me/tracks/contains`、`PUT/DELETE /me/tracks` 一律 403）：`/me`, `/me/playlists` GET/POST(create), `/playlists/{id}` GET/PUT(rename), `/playlists/{id}/items` GET/POST/PUT/DELETE（条目字段是 `item`；DELETE 曲库曲目用 `items:[{uri}]`，**本地文件只能按位置删**——`spotify:local:` URI 会被当 track id 解析而 400 "Invalid base62 id"，改发 `positions:[…]`，按位置从高到低、链式 snapshot_id，避免前面的索引位移）, `/me/library?uris=` PUT/DELETE, `/me/library/contains?uris=`（每次 ≤ 40）, `/me/tracks` GET（列全库，作 contains 的兜底）, `/search`, `/tracks/{id}`。
+* **HTTP**：Bun `fetch` 薄封装：自动分页、`429` 按 `Retry-After` 退避（≤ 120 s）、5xx 只对 GET 指数重试——写请求的 5xx 可能是服务端已执行后才失败，重发会加两遍/搬两次，所以直接失败结束本次运行，下次运行重新规划即可。**Development Mode 应用的 `/search` 有每日配额**，超出后 429 的 `Retry-After` ≈ 24 h：此时抛 `SpotifyRateLimitedError`，match 阶段停止、截止时间写入 `meta.spotify_search_blocked_until`，plan/apply 照常处理已匹配部分；截止前的后续运行直接跳过 match。为避免撞配额，每次运行有搜索预算 `max_searches_per_run`（缓存命中不计）、每首歌最多 `max_queries_per_track` 个查询、并发 `search_concurrency` 与最小间隔 `search_min_interval_ms`。不引入官方 SDK（其 token 策略面向浏览器，对 CLI 刷新流程不友好；所需端点 < 15 个）。
+* 使用端点（2025 起 Spotify 对新应用只开放新路径，旧路径 `/users/{id}/playlists`、`/playlists/{id}/tracks`、`/me/tracks/contains`、`PUT/DELETE /me/tracks` 一律 403）：`/me`, `/me/playlists` GET/POST(create), `/playlists/{id}` GET/PUT(rename), `/playlists/{id}/items` GET/POST/PUT/DELETE（条目字段是 `item`；DELETE 曲库曲目用 `items:[{uri}]`，**本地文件只能按位置删**——`spotify:local:` URI 会被当 track id 解析而 400 "Invalid base62 id"，改发 `positions:[…]`，按位置从高到低、每批都带列表时的 snapshot_id）, `/me/library?uris=` PUT/DELETE, `/me/library/contains?uris=`（每次 ≤ 40）, `/me/tracks` GET（列全库，作 contains 的兜底）, `/search`, `/tracks/{id}`。
 * 所有工具创建的歌单 description 固定为 `Managed by Spotifify`，便于识别。
 
 ## 8. CLI（`src/cli.ts`，commander）
@@ -370,9 +373,9 @@ Bun 内置：`bun:sqlite`、`Bun.CryptoHasher('blake2b256')`、`fetch`、`Bun.sp
 
 ## 14. 测试策略
 
-* 单元：`normalize`（CJK / 括号 / feat.）、`score`（门槛边界）、`reorder`（LIS 移动数与结果顺序，200 组随机排列）、`localUri`（往返编解码、实测客户端 URI）、`duration`（合成 Info/Xing 帧与 mvhd，钉住客户端索引里的实测值）、`plan`（add / prune / foreign / awaiting / stale / 重复项 / replace 许可）、`ncm`（合成 fixture 的头部解析与解密 + RC4 已知答案）、`tags`（文件名解析）。
-* 端到端（`test/e2e.test.ts`，需要 ffmpeg，缺失时跳过）：ffmpeg 生成的本地库 → 真实 matcher/plan/apply → 进程内假 Spotify（`SPOTIFIFY_SPOTIFY_API`）。覆盖：首建顺序、Like、导出、第二次运行零写请求、远端漂移修复（重排 / 重加）、粘贴的本地项对账与旧格式 stale 条目清理、foreign 保留、`--prune` 前后行为、dry-run 无写。
-* 网易云适配层不做 mock 测试（保持薄，靠 zod 校验响应形状）。
+* 单元：`normalize`（CJK / 括号 / feat.）、`score`（门槛边界）、`reorder`（LIS 移动数与结果顺序，200 组随机排列）、`localUri`（往返编解码、实测客户端 URI）、`duration`（合成 Info/Xing 帧与 mvhd，钉住客户端索引里的实测值）、`plan`（add / prune / foreign / awaiting / stale / 重复项 / replace 许可 / 无 item 条目 / linked）、`ncm`（合成 fixture 的头部解析与解密 + RC4 已知答案）、`tags`（文件名解析）、`source`（本地文件读不了沿用旧行；网易云 `song_detail` 漏返回不冻结歌单）、`client`（5xx 只重试 GET）、`matcher`（声纹 ISRC 命中已入池的候选）、`exportNames`（长名冲突有限收敛）。
+* 端到端（`test/e2e.test.ts`，需要 ffmpeg 的部分缺失时跳过）：ffmpeg 生成的本地库 → 真实 matcher/plan/apply → 进程内假 Spotify（`SPOTIFIFY_SPOTIFY_API`）。覆盖：首建顺序、Like、导出、第二次运行零写请求、远端漂移修复（重排 / 重加）、粘贴的本地项对账与旧格式 stale 条目清理、foreign 保留、`--prune` 前后行为、dry-run 无写；删除边界：到期重搜落入 review 不撤销粘贴、`--playlist` 不取消其他歌单的喜欢、退出镜像的歌单仍引用的导出不删、没有镜像歌单时 `--prune` 零写、101 项跨批删除叠加并发插入；重排策略：≤100 一次原子替换、>100 走移动、列表后被改动的歌单抛 `PlaylistDriftError` 且零写。
+* 网易云适配层只对必需字段做 zod 校验（`playlist`、`trackIds` 缺失即报错，不默认为空）。
 
 ## 15. 风险与开放问题
 

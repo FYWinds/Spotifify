@@ -3,7 +3,7 @@
  * remote operation so a crash mid-way leaves a consistent (re-plannable) state. See DESIGN.md §6.
  */
 import type { Config } from "../config.ts";
-import type { SpotifyApi } from "../spotify/api.ts";
+import { ITEMS_BATCH, type SpotifyApi } from "../spotify/api.ts";
 import { MANAGED_DESCRIPTION } from "../spotify/types.ts";
 import type { Repo } from "../state/repo.ts";
 import { chunk } from "../util/retry.ts";
@@ -37,6 +37,13 @@ export interface ApplySummary {
 /** Replace the whole playlist only when it saves real calls: more than this many moves AND more than a third of the list. */
 const REPLACE_MIN_MOVES = 5;
 const REPLACE_MOVE_RATIO = 1 / 3;
+
+export class PlaylistDriftError extends Error {
+  constructor(name: string) {
+    super(`playlist "${name}" changed since it was read; nothing was applied to it — rerun \`spotifify sync\``);
+    this.name = "PlaylistDriftError";
+  }
+}
 
 /** Applies playlist and library changes. Exports run separately (`applyExports`) before planning. */
 export async function applyPlan(plan: Plan, deps: ApplyDeps): Promise<ApplySummary> {
@@ -93,6 +100,14 @@ async function applyPlaylist(p: PlaylistPlan, deps: ApplyDeps, s: ApplySummary):
   }
   if (spotifyId === null) throw new Error(`playlist plan for ${p.sourceName} has neither spotifyId nor create`);
 
+  // Moves and the replace order describe the playlist as it was listed and carry no snapshot Spotify could
+  // validate them against (unlike position removals), so an edit since the listing would reorder the wrong
+  // rows: such a playlist is checked before anything is written to it.
+  const willPrune = deps.prune && p.prune.length > 0;
+  if (p.snapshotId !== null && p.moves.length > 0 && (await api.getPlaylistSnapshot(spotifyId)) !== p.snapshotId) {
+    throw new PlaylistDriftError(name);
+  }
+
   if (p.rename) {
     await api.renamePlaylist(spotifyId, p.rename.to);
     name = p.rename.to;
@@ -100,8 +115,10 @@ async function applyPlaylist(p: PlaylistPlan, deps: ApplyDeps, s: ApplySummary):
     log.info("renamed playlist", p.rename);
   }
 
-  // Replace-all fast path: only when no local items exist and moving would cost noticeably more calls.
-  const useReplace = p.replaceAllowed && p.moves.length > REPLACE_MIN_MOVES && p.moves.length > p.targetOrder.length * REPLACE_MOVE_RATIO;
+  // Replace-all fast path: one atomic PUT, only for lists it can hold whole, with no local items, and when
+  // moving would cost noticeably more calls.
+  const useReplace =
+    p.replaceAllowed && p.targetOrder.length <= ITEMS_BATCH && p.moves.length > REPLACE_MIN_MOVES && p.moves.length > p.targetOrder.length * REPLACE_MOVE_RATIO;
   let snapshot: string | null = null;
 
   if (useReplace) {
@@ -114,12 +131,12 @@ async function applyPlaylist(p: PlaylistPlan, deps: ApplyDeps, s: ApplySummary):
     s.replaced++;
     log.info("replaced playlist contents", { name, items: p.targetOrder.length });
   } else {
-    for (const uris of chunk(p.adds, 100)) {
+    for (const uris of chunk(p.adds, ITEMS_BATCH)) {
       snapshot = await api.addPlaylistItems(spotifyId, uris);
       repo.addManaged(spotifyId, uris, now);
       s.added += uris.length;
     }
-    if (deps.prune && p.prune.length > 0) {
+    if (willPrune) {
       // Positions come from the planning-time listing, so they are validated against that snapshot
       // (Spotify checks them against the snapshot given, not the current one). Adds only append.
       const base = p.snapshotId ?? snapshot ?? (await api.getPlaylist(spotifyId))?.snapshot_id ?? null;
@@ -139,6 +156,11 @@ async function applyPlaylist(p: PlaylistPlan, deps: ApplyDeps, s: ApplySummary):
       }
     }
   }
+  // Local entries present after this run reference their export from this playlist; an export is only
+  // garbage-collected once no playlist references it any more (see planExportGc). Without --prune the
+  // stale ones are still there.
+  const localPresent = deps.prune ? p.linked : [...p.linked, ...p.prune.map((x) => x.uri).filter((u) => u.startsWith("spotify:local:"))];
+  repo.replaceManagedLocal(spotifyId, localPresent, now);
 
   if (p.adds.length > 0 || p.moves.length > 0 || p.prune.length > 0) {
     log.info("synced playlist", { name, added: p.adds.length, pruned: deps.prune ? p.prune.length : 0, moves: p.moves.length, awaiting: p.awaiting.length });

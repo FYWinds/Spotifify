@@ -67,7 +67,7 @@ spotifify review               # 处理低置信度匹配
 | `init [--force\|--upgrade]` | 写配置模板；`--upgrade` 把新版本新增的选项合并进现有文件（保留原值，写 `.bak`）。 |
 | `doctor` | 检查配置、状态库、`ffmpeg`/`fpcalc`、token scope、搜索配额截止时间，以及桌面端的本地文件索引（哪些导出没被索引、哪些时长和我们算的不一致——歌单里灰掉的两种原因）。 |
 | `auth spotify` / `auth netease [--cookie …]` | 登录。 |
-| `sync [--dry-run] [--prune] [--source netease\|local] [--playlist 名称] [--skip-match]` | 拉取 → 匹配 → 导出 → 计划 → 执行 → 报告。`--prune` 还会删掉被取代的本地条目和不再需要的导出文件。退出码 `3` = 需要重新登录。 |
+| `sync [--dry-run] [--prune] [--source netease\|local] [--playlist 名称] [--skip-match]` | 拉取 → 匹配 → 导出 → 计划 → 执行 → 报告。`--prune` 还会删掉被取代的本地条目和不再需要的导出文件——但只在本次能对账的范围内：带 `--playlist`/`--source` 时不会取消其他镜像歌单想要的喜欢，本次计划外的歌单仍引用的导出文件保留，没有任何镜像歌单的运行什么都不删。退出码 `3` = 需要重新登录。 |
 | `review` | Ink TUI：`j/k` 移动，`1-9`/`Enter` 选候选，`/` 自定义搜索，`p` 粘贴 Spotify 链接/URI，`o`/`O` 在浏览器打开候选/来源，`l` 保持为本地文件，`s` 跳过，`u` 撤销，`?` 帮助。 |
 | `status` | 匹配统计、歌单映射、上次运行。 |
 | `unmatched [--status local\|review\|all] [--tsv]` | 没有 Spotify 匹配的歌以及对应的本地文件。 |

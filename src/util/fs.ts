@@ -1,7 +1,10 @@
 import { createReadStream } from "node:fs";
 
+/** Longest base name (without extension) an export file gets, in UTF-16 units (NTFS's limit is 255). */
+export const MAX_FILENAME = 150;
+
 /** Replace characters Windows/NTFS rejects and trim trailing dots/spaces. */
-export function sanitizeFilename(name: string, max = 150): string {
+export function sanitizeFilename(name: string, max = MAX_FILENAME): string {
   const cleaned = name
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
     .replace(/\s+/g, " ")

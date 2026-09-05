@@ -94,6 +94,23 @@ describe("computePlaylistPlan", () => {
     const p = computePlaylistPlan(base({ targetName: "NE · P", spotify: { id: "pl", name: "P" } }));
     expect(p.rename).toEqual({ from: "P", to: "NE · P" });
   });
+
+  test("an entry Spotify returned without an item keeps its position, is never removed, and rules out replace-all", () => {
+    const remote = [{ uri: "", isLocal: false, owned: false }, ...[t("b"), t("x"), t("a")].map((uri) => ({ uri, isLocal: false, owned: false }))];
+    const p = computePlaylistPlan(base({ desired: [item(t("a")), item(t("b"))], remote, managed: new Set([t("a"), t("b"), t("x")]), pruneEnabled: true }));
+    expect(p.foreign).toEqual([]);
+    expect(p.prune).toEqual([{ uri: t("x"), positions: [2] }]); // the placeholder at 0 counts
+    expect(p.replaceAllowed).toBe(false);
+    expect(simulate(["", t("b"), t("a")], p.moves)).toEqual([t("a"), t("b"), ""]);
+  });
+
+  test("a pasted local entry that matches its export is reported as linked, not awaiting", () => {
+    const uri = "spotify:local:a:b:c:120";
+    const p = computePlaylistPlan(base({ desired: [item(t("a")), item(uri, "local")], remote: [{ uri: t("a"), isLocal: false, owned: false }, { uri, isLocal: true, owned: true }] }));
+    expect(p.linked).toEqual([uri]);
+    expect(p.awaiting).toEqual([]);
+    expect(p.prune).toEqual([]);
+  });
 });
 
 describe("resolveRemoteLocalUri", () => {

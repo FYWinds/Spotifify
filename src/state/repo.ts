@@ -386,6 +386,29 @@ export class Repo {
     })();
   }
 
+  /** `spotify:local:` uris recorded as present in a managed playlist → ids of the playlists referencing each. */
+  localUriReferences(): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    for (const r of this.db.query<{ uri: string; spotify_playlist_id: string }, []>("SELECT uri, spotify_playlist_id FROM managed_item WHERE uri LIKE 'spotify:local:%'").all()) {
+      let ids = out.get(r.uri);
+      if (!ids) {
+        ids = [];
+        out.set(r.uri, ids);
+      }
+      ids.push(r.spotify_playlist_id);
+    }
+    return out;
+  }
+
+  /** Record exactly which of our local entries a playlist holds after a sync (rows for entries the user removed by hand go away). */
+  replaceManagedLocal(spotifyPlaylistId: string, uris: string[], now: number): void {
+    const q = this.db.query("INSERT OR IGNORE INTO managed_item (spotify_playlist_id, uri, added_at) VALUES (?, ?, ?)");
+    this.db.transaction(() => {
+      this.db.run("DELETE FROM managed_item WHERE spotify_playlist_id = ? AND uri LIKE 'spotify:local:%'", [spotifyPlaylistId]);
+      for (const u of uris) q.run(spotifyPlaylistId, u, now);
+    })();
+  }
+
   likedIds(): Set<string> {
     return new Set(this.db.query<{ spotify_id: string }, []>("SELECT spotify_id FROM liked").all().map((r) => r.spotify_id));
   }
