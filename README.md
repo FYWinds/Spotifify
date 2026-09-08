@@ -73,8 +73,8 @@ State lives in `~/.spotifify` (`config.toml`, `state.db`, logs); override with `
 | `unmatched [--status local\|review\|all] [--file with\|without\|all] [--tsv]` | Tracks without a Spotify match, their key, and the local file that backs them; `--file without` lists the ones still needing a file (`attach`). |
 | `attach <netease id \| key> <file>` | Give a NetEase track that has no usable local file one by hand: the audio is copied into `local.dirs[0]` with the song's `163 key` tag (a stub or damaged download of the same song under that name is replaced) and the track is kept local. |
 | `aliases [--apply] [--min N]` | Mine `matching.artist_aliases` (e.g. `"陈奕迅" = "Eason Chan"`) from confirmed matches. |
-| `pending [--copy] [--playlist NAME]` | Local-file URIs still to be pasted, from the last sync. |
 | `rematch <key…> \| --all-local` | Forget match decisions so the next sync searches again. |
+| `pin <key> <spotify link\|uri>` | Set a track's Spotify match by hand — including one the matcher already matched. `sync` adds the new entry, `sync --prune` removes the old one. |
 | `export [--force]` | Run only the export step. |
 | `task install [--time HH:mm] [--exe PATH]` / `task uninstall` | Register a daily Windows Scheduled Task (`scripts/register-task.ps1`). |
 

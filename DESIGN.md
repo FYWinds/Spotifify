@@ -263,6 +263,7 @@ spotifify attach <netease id|key> <file>   把手头的音频作为该歌的网�
 spotifify aliases [--apply] [--min <n>]   从已确认的匹配推断艺人别名；--apply 写入配置
 spotifify pending [--copy] [--playlist <name>]
 spotifify rematch <canonical_key>|--all-local
+spotifify pin <key> <spotify link|uri>   手动指定匹配（matched 的也能改）：matched(user)；下次 sync 加新条目，旧条目 / 旧 like 由 --prune 清
 spotifify export [--force]           只跑 export 阶段；--force 重导出已存在的文件（改了 bitrate，或需要刷新 tag/URI 时）
 spotifify task install|uninstall     注册 / 注销 Windows 任务计划（调用 scripts/register-task.ps1）
 ```

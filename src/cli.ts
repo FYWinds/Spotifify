@@ -518,6 +518,31 @@ program
   });
 
 program
+  .command("pin")
+  .description("set a track's Spotify match by hand from a track link or uri (also for tracks the matcher already matched); the next sync swaps the playlist entry")
+  .argument("<key>", "netease:<id>, the bare song id, isrc:XXX or local:hash (see `spotifify unmatched --tsv` / `status`)")
+  .argument("<track>", "spotify:track:ID or https://open.spotify.com/track/ID")
+  .action(async (key: string, ref: string) => {
+    try {
+      const c = await ctx();
+      const canonical = /^\d+$/.test(key) ? `netease:${key}` : key;
+      const track = c.repo.representativeTracks([canonical]).get(canonical);
+      const match = c.repo.getMatch(canonical);
+      if (!track || !match) throw new Error(`unknown track ${canonical}`);
+      const api = spotifyApi(c);
+      const matcher = new Matcher({ api, repo: c.repo, cfg: c.cfg, market: await api.resolveMarket(c.cfg.spotify.market) });
+      const cand = await matcher.candidateFromUri(track, ref);
+      if (!cand) throw new Error(`no Spotify track found for ${ref}`);
+      const was = match.status === "matched" ? ` (was ${match.spotifyUri})` : ` (was ${match.status})`;
+      c.repo.upsertMatch({ ...match, status: "matched", spotifyId: cand.id, spotifyUri: cand.uri, score: cand.score, decidedBy: "user", decidedAt: Date.now(), candidates: [cand, ...match.candidates.filter((x) => x.id !== cand.id)] });
+      console.log(`${track.artists.join(", ")} - ${track.title} → ${cand.artists.join(", ")} - ${cand.title} (${cand.album}, score ${cand.score.toFixed(2)}${cand.isPlayable ? "" : ", NOT playable in your market"})${was}`);
+      console.log("run `spotifify sync` to add it; the entry it replaces is removed with `sync --prune`");
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+program
   .command("attach")
   .description("give a NetEase track that has no usable local file one: the audio is copied into local.dirs[0] tagged as that song's download, and the track is kept local")
   .argument("<key>", "netease:<id> or the bare song id (see `spotifify unmatched`)")
