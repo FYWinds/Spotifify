@@ -59,7 +59,6 @@ export interface ExportPlan {
   sourcePath: string;
   /** sanitized file name without extension, unique within export.dir */
   baseName: string;
-  decryptNcm: boolean;
 }
 
 export interface Plan {

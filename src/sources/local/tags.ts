@@ -1,5 +1,8 @@
-import { parseFile, type IAudioMetadata } from "music-metadata";
+import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
+import { parseBlob, parseBuffer, parseFile, type IAudioMetadata, type IOptions } from "music-metadata";
 import { decode163Key, type NcmMeta } from "./ncm.ts";
+import { type Container, sniffContainer, wrappedM4aOffset } from "./wrapped.ts";
 
 export interface FileTags {
   title?: string;
@@ -11,10 +14,31 @@ export interface FileTags {
   netease?: NcmMeta;
 }
 
+/** Extensions music-metadata would pick the right parser for anyway, and the MIME type that forces it otherwise. */
+const CONTAINER: Record<Container, { ext: readonly string[]; mime: string }> = {
+  mp3: { ext: ["mp3"], mime: "audio/mpeg" },
+  m4a: { ext: ["m4a", "mp4", "m4b"], mime: "audio/mp4" },
+  flac: { ext: ["flac"], mime: "audio/flac" },
+  ogg: { ext: ["ogg", "oga", "opus", "spx"], mime: "audio/ogg" },
+  wav: { ext: ["wav", "wave"], mime: "audio/wav" },
+};
+
 export async function readTags(path: string): Promise<FileTags> {
+  // music-metadata picks its parser by extension; a file whose content says otherwise (see wrapped.ts) is parsed
+  // by content instead — by name it would read nonsense (an m4a as mp3: no tags, duration 0).
+  const container = await sniffContainer(path);
+  const parse =
+    container === null || CONTAINER[container].ext.includes(extname(path).slice(1).toLowerCase())
+      ? (opts: IOptions) => parseFile(path, opts)
+      : (opts: IOptions) => parseBlob(Bun.file(path, { type: CONTAINER[container].mime }), opts);
   // The cheap header-only pass covers most formats; only scan the whole file when duration is still unknown.
-  let meta = await parseFile(path, { skipCovers: true });
-  if (meta.format.duration === undefined) meta = await parseFile(path, { skipCovers: true, duration: true });
+  let meta = await parse({ skipCovers: true });
+  const wrapped = await wrappedM4aOffset(path);
+  if (wrapped !== null) {
+    // The ID3 tags stay authoritative; the duration must come from the m4a payload the mp3 parser cannot see.
+    const payload = await parseBuffer((await readFile(path)).subarray(wrapped), { mimeType: "audio/mp4" }, { skipCovers: true });
+    meta = { ...meta, format: { ...meta.format, duration: payload.format.duration } };
+  } else if (meta.format.duration === undefined) meta = await parse({ skipCovers: true, duration: true });
   const { common, format } = meta;
   const artists = (common.artists ?? (common.artist === undefined ? [] : [common.artist])).map((a) => a.trim()).filter((a) => a !== "");
   const isrc = common.isrc?.[0]?.replace(/[^0-9A-Za-z]/g, "").toUpperCase();

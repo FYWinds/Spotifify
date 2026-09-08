@@ -1,7 +1,9 @@
 import { render } from "ink";
 import { createElement } from "react";
+import type { Config } from "../config.ts";
 import type { Matcher } from "../match/matcher.ts";
 import type { Repo } from "../state/repo.ts";
+import { attachFile } from "../sync/attach.ts";
 import { App } from "./App.tsx";
 import { loadQueue } from "./model.ts";
 
@@ -9,6 +11,7 @@ export interface ReviewDeps {
   repo: Repo;
   matcher: Matcher;
   market: string;
+  cfg: Pick<Config, "local" | "export">;
 }
 
 /** Runs the interactive review; resolves when the user quits. Every decision is already persisted by then. */
@@ -19,6 +22,7 @@ export async function runReviewTui(deps: ReviewDeps): Promise<{ decided: number 
     createElement(App, {
       repo: deps.repo,
       matcher: deps.matcher,
+      attach: (track, path) => attachFile(track, path, deps.cfg),
       market: deps.market,
       initialQueues,
       onExit: (n: number) => {

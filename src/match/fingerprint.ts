@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { decryptNcm, readNcmMeta } from "../sources/local/ncm.ts";
+import { unwrapM4a, wrappedM4aOffset } from "../sources/local/wrapped.ts";
 import type { Repo } from "../state/repo.ts";
 import { log } from "../util/log.ts";
 import { RetryableError, sleep, withRetry } from "../util/retry.ts";
@@ -59,13 +60,19 @@ async function runFpcalc(fpcalc: string, path: string): Promise<z.infer<typeof F
   return FpcalcOutput.parse(JSON.parse(stdout));
 }
 
-/** Chromaprint of a library file. fpcalc decodes with ffmpeg, which cannot open an encrypted .ncm container, so those are decrypted to a temp file first. */
+/**
+ * Chromaprint of a library file. fpcalc decodes with ffmpeg, which can open neither an encrypted .ncm
+ * container nor an m4a hidden behind an ID3v2 tag; both are materialized as a plain temp file first.
+ */
 export async function chromaprint(fpcalc: string, path: string, contentHash: string): Promise<z.infer<typeof FpcalcOutput> | null> {
-  if (!path.toLowerCase().endsWith(".ncm")) return runFpcalc(fpcalc, path);
-  const { format } = await readNcmMeta(path);
-  const tmp = join(tmpdir(), `spotifify-fp-${contentHash.slice(0, 16)}.${format.toLowerCase() || "audio"}`);
+  const ncm = path.toLowerCase().endsWith(".ncm");
+  const wrapped = ncm ? null : await wrappedM4aOffset(path);
+  if (!ncm && wrapped === null) return runFpcalc(fpcalc, path);
+  const ext = wrapped !== null ? "m4a" : (await readNcmMeta(path)).format.toLowerCase() || "audio";
+  const tmp = join(tmpdir(), `spotifify-fp-${contentHash.slice(0, 16)}.${ext}`);
   try {
-    await decryptNcm(path, tmp);
+    if (wrapped !== null) await unwrapM4a(path, wrapped, tmp);
+    else await decryptNcm(path, tmp);
     return await runFpcalc(fpcalc, tmp);
   } finally {
     await rm(tmp, { force: true });

@@ -6,7 +6,7 @@ import type { Config } from "../config.ts";
 import { Matcher } from "../match/matcher.ts";
 import { SearchBudgetExhaustedError } from "../match/search.ts";
 import type { MatchRow } from "../match/types.ts";
-import { LocalSource } from "../sources/local/source.ts";
+import { LocalSource, SCAN_VERSION } from "../sources/local/source.ts";
 import { NeteaseAuthError, NeteaseClient } from "../sources/netease/client.ts";
 import { NeteaseSource } from "../sources/netease/source.ts";
 import type { SourceKind, SourceTrack } from "../sources/types.ts";
@@ -66,6 +66,7 @@ export interface SyncSummary {
 }
 
 const META_SEARCH_BLOCKED_UNTIL = "spotify_search_blocked_until";
+const META_LOCAL_SCAN_VERSION = "local_scan_version";
 
 const DAY_MS = 86_400_000;
 
@@ -153,8 +154,10 @@ export function planExportGc(repo: Repo, cfg: Config, opts: Pick<SyncOptions, "s
   // `review` keeps its export: a candidate that still needs a human must not undo a paste (see desiredItems)
   const keep = new Set([...repo.listMatches("local"), ...repo.listMatches("review")].map((m) => m.canonicalKey));
   const referenced = repo.localUriReferences();
-  return repo.listExports().filter((e) => {
-    if (needed.has(e.canonicalKey) && keep.has(e.canonicalKey)) return false;
+  const exports = repo.listExports();
+  const backed = repo.representativeTracks(exports.map((e) => e.canonicalKey));
+  return exports.filter((e) => {
+    if (needed.has(e.canonicalKey) && keep.has(e.canonicalKey) && backed.get(e.canonicalKey)?.file !== undefined) return false;
     const refs = referenced.get(e.localUri);
     return refs === undefined || refs.every((id) => planned.has(id));
   });
@@ -186,9 +189,12 @@ async function pull(deps: SyncDeps, opts: SyncOptions, now: number): Promise<Syn
   }
 
   if (cfg.local.enabled && wanted("local")) {
-    const source = new LocalSource(cfg.local, repo.localTracksByPath(), (done, total) => opts.onProgress?.("scan", done, total));
+    // Cached rows are only trusted when the scanner that wrote them read files the way this one does.
+    const cache = repo.metaGet(META_LOCAL_SCAN_VERSION) === String(SCAN_VERSION) ? repo.localTracksByPath() : new Map();
+    const source = new LocalSource(cfg.local, cache, (done, total) => opts.onProgress?.("scan", done, total));
     const { playlists } = await source.pull();
     repo.savePull("local", playlists, now);
+    repo.metaSet(META_LOCAL_SCAN_VERSION, String(SCAN_VERSION));
     out.local = { playlists: playlists.length, tracks: playlists.reduce((n, p) => n + p.tracks.length, 0) };
     log.info("pulled local", out.local);
   }
@@ -274,7 +280,9 @@ export async function buildPlan(deps: SyncDeps, opts: Pick<SyncOptions, "prune" 
   const me = await api.me();
   const remotePlaylists = (await api.listMyPlaylists()).filter((p) => p.owner.id === me.id);
   const exports = repo.listExports();
-  const exportByKey = new Map(exports.map((e) => [e.canonicalKey, e] as const));
+  // An export outlives its source file only as garbage: its entries are ours to prune, its file to collect (planExportGc).
+  const backed = repo.representativeTracks(exports.map((e) => e.canonicalKey));
+  const exportByKey = new Map(exports.filter((e) => backed.get(e.canonicalKey)?.file !== undefined).map((e) => [e.canonicalKey, e] as const));
 
   const mirrored = selectedSourcePlaylists(repo, cfg, {});
   const selected = new Set(selectedSourcePlaylists(repo, cfg, opts).map((p) => p.id));
@@ -448,7 +456,7 @@ function planExports(repo: Repo, localKeys: string[], exports: LocalExportRow[],
       base = existing.exportPath.replace(/\.[^.\\/]+$/, "").replace(/^.*[\\/]/, "");
     }
     usedNames.add(base.toLowerCase());
-    plans.push({ canonicalKey: key, sourcePath: t.file.path, baseName: base, decryptNcm: t.file.path.toLowerCase().endsWith(".ncm") });
+    plans.push({ canonicalKey: key, sourcePath: t.file.path, baseName: base });
   }
   return plans;
 }

@@ -124,9 +124,9 @@ export function CandidatePane({ item, selected, busy }: Props) {
         <Row cells={HEADER} style={{ dim: true }} />
         <Row cells={sourceCells} style={{ color: "magenta" }} />
         {busy ? (
-          <Text color="yellow">searching…</Text>
+          <Text color="yellow">working…</Text>
         ) : shown.length === 0 ? (
-          <Text dimColor>No candidates. Press / to search or p to paste a Spotify link.</Text>
+          <Text dimColor>No candidates. Press / to search, p to paste a Spotify link, l to keep it local.</Text>
         ) : (
           shown.map((c, i) => (
             <Row

@@ -129,8 +129,22 @@ local(auto) ──到期(retry_unmatched_after_days)──▶ pending      # 曲
 * `.ncm`：先只解析头部拿元数据（`musicId / musicName / artist / album / duration / format`），**不解密音频**；只有走 export 路径时才解密。算法（AES-128-ECB 解 RC4 key 与 metadata、变种 RC4 keybox 解音频）公开且稳定，约 120 行，自实现于 `src/sources/local/ncm.ts`，避免依赖无人维护的 npm 包；用固定 fixture 做回归测试。
 * 其他格式：`music-metadata` 读 title/artist/album/duration/ISRC；缺失时按文件名模式 `艺人 - 标题` / `标题 - 艺人`（可配置顺序）兜底。tag 读取失败（如分片 m4a）只降级为文件名，不跳过文件。
 * 网易云客户端下载的普通 mp3/flac/m4a 在注释 tag（ID3 `COMM` / Vorbis `DESCRIPTION` / `©cmt`）里带 `163 key(Don't modify):<base64>`，内容与 ncm 头部相同（AES-128-ECB[META_KEY]，`music:` + JSON）。解出 `musicId` 后与 `.ncm` 一样得到 `neteaseId`，因此非 VIP 下载也能和网易云歌单里的歌共享 key；艺人 tag 里的 `/` 分隔按网易云习惯拆开。
+* 网易云客户端有一类下载是 **ID3v2 tag + 完整 m4a 容器，扩展名却是 `.mp3`**（`src/sources/local/wrapped.ts`）。`music-metadata` 读得到 tag 但时长是垃圾，ffmpeg / fpcalc 直接拒绝整个文件（"moov atom not found"）。按前 10 字节的 ID3 头算出 payload 偏移、确认 `ftyp` 后：扫描时长取自 payload，指纹与导出把 payload 复制成临时 `.m4a` 再喂 ffmpeg，之后走普通 m4a 路径。云盘下载的文件更简单粗暴：内容是什么都叫 `.mp3`（实测一个 `.mp3` 就是普通 m4a）。`music-metadata` 按扩展名选解析器，会把 m4a 当 mp3 读出"无 tag、时长 0"；ffmpeg `-c:a copy -f mp3` 直接报 "Exactly one MP3 audio stream is required"。所以 `sniffContainer` 按 magic（`OggS` / `fLaC` / `RIFF…WAVE` / `ftyp` / MPEG 帧同步）判断真实容器：`readTags` 在扩展名与内容不符时改用 `parseBlob(Bun.file(path, { type }))` 按内容选解析器（仍是随机访问），`stageInput` 按真实容器决定复制还是转码。开头是 `ID3` 的文件不判断（交给扩展名 / 上面的包裹检测）。
+* **下架残片**：带 163 key 的文件若实际时长不足 key 里 `duration` 的一半（2.6 s 的试听残片、下到一半的文件），按 `TruncatedDownloadError` 整条跳过——不是"暂时读不了"，不保留旧行，每次 pull 汇总一条 warn。没有文件的 key 只剩网易云行，走正常匹配 / 复核；其已有导出视为孤儿（不再列入待粘贴，`--prune` 时连同远端条目一起清理）。`SCAN_VERSION` 变更时下一次 pull 忽略 size/mtime 缓存重读全库，保证旧行按新规则重算。
 * 所有本地 track 归入一个 `source_playlist(kind='local')`，顺序 = 路径字典序（稳定、可预测）。
 * `local.mirror_playlist = false` 时不为本地库创建 Spotify 歌单：本地文件只作为**其他歌单里未匹配歌曲的音频来源**。因为 `.ncm` 头部带 `musicId`，本地文件和网易云歌单里的同一首歌共享 `canonical_key`，网易云歌单的 `local` 项由此获得文件 → 导出 → 出现在该歌单的待粘贴列表里。match / export 只处理"被镜像歌单引用"的 key，本地库里多余的文件不会消耗搜索配额。典型用法：把 `local.dirs` 指向网易云客户端的下载目录，`spotifify unmatched` 列出还缺文件的歌，在客户端下载它们，再 `sync`。
+
+### 4.3 手动指定文件（`src/sync/attach.ts`）
+
+仅网易云下架、本地下载又是残片（§4.2 的 `TruncatedDownloadError`）或损坏、Spotify 也没有的歌，用户可以在别处找到音频后**手动交给工具**：`spotifify attach <网易云 id|key> <文件>`，或复核 TUI 里对没有本地文件的网易云条目按 `l`（提示输入路径；留空则只标 local 不给文件）。工具不做"路径映射表"：它把文件**复制进 `local.dirs[0]`**，写规范 tag（title / artist（网易云习惯用 `/` 连接）/ album / 封面）外加伪造的 `163 key(Don't modify):` 注释（`encode163Key`，AES-128-ECB[META_KEY] 加密的 `music:{musicId,musicName,artist,album,alias,format,duration}`），即网易云客户端给下载文件打的同一套 tag。由此：
+
+* 下次 `pull` 按 §4.2 的规则读到 `musicId` → 与歌单里的歌共享 `netease:{id}` → 走正常 export / 粘贴流程；DB 丢了也不影响，身份在文件里。
+* 网易云客户端应当也把它认作该歌的下载（文件放在下载目录时）[需核实：客户端是否只认 COMM 帧里的 key]。
+* mp3 的注释**必须是 COMM 帧**：ffmpeg 把 `comment` 写成 `TXXX:comment`，ID3v2.3 读取器按 `/` 拆分文本帧，base64 里的 `/` 会把 key 切碎；`runFfmpeg` 在 ffmpeg 写完后自己往 ID3v2 tag 头部插一个 COMM 帧（ISO-8859-1，`eng`，无描述）。flac/ogg 走 Vorbis `DESCRIPTION`，m4a 走 `©cmt`，ffmpeg 原生支持。
+* 容器：mp3 / m4a / flac / ogg / wav 直接 `-c:a copy`，`.opus` / `.webm`（yt-dlp 常见）重新封装成 `.ogg`，`.ncm` 先解密、ID3 包裹的 m4a 先剥壳（与 export 共用 `stageInput`），其他编码成 mp3；目标扩展名必须在 `local.extensions` 里，否则扫描不到。B 站下载的分片 m4a（`sidx`+`moof`，`music-metadata` 读不了）经 ffmpeg 重封装后也成为普通 m4a。
+* 写完先在临时目录用扫描器本身的 `describeFile` 回读校验（读得出同一个 `neteaseId`、时长不低于歌曲一半），通过才移入库目录（跨卷用 `.part` 复制后 rename）。
+* 文件名 `{artist} - {title}.{ext}`：库目录里同名（任意扫描扩展名）且 163 key 是**同一首歌**的旧文件视为被替换的残片，删除；同名但是别的歌或读不出身份的文件保留，新文件加 ` (2)`。
+* `attach` 命令与 TUI 都把 match 记为 `local(user)`。源文件不动。
 
 ## 5. 匹配（`src/match`）
 
@@ -217,7 +231,7 @@ renames   = 来源歌单改名
 
 * 输出目录 `export.dir`（用户已在 Spotify 桌面端 *设置 → 本地文件* 添加为来源）。
 * 文件名 `{artist} - {title}.{mp3|m4a}`，Windows 非法字符替换；冲突加 `(2)`。
-* 统一经 ffmpeg：已是 mp3/m4a → `-c:a copy`；其他 → `libmp3lame -b:a 320k`。总是写规范 tag（title / artist / album / 封面）并删除其他 tag，使 `local_uri` 可预测。`.ncm` 先解密到临时文件再进 ffmpeg。
+* 统一经 ffmpeg：已是 mp3/m4a → `-c:a copy`；其他 → `libmp3lame -b:a 320k`。总是写规范 tag（title / artist / album / 封面）并删除其他 tag，使 `local_uri` 可预测。`.ncm` 先解密到临时文件再进 ffmpeg；ID3 包裹的 m4a 先剥掉 tag 复制成临时 `.m4a`。
 * **落盘方式受客户端监视器约束**：桌面端实时监视 `export.dir`，行为是"目录项**新建**时解析一次；目录项消失时删除索引；中间不再重读"。由此：(1) ffmpeg 不能直接写最终文件名——写到一半的 mp3 Xing 头还没回填、m4a 的 moov 还没前移，客户端把时长记成未知（界面显示 `1193046:28:15` = 0xFFFFFFFF），永远播不了；(2) 用 `rename` 覆盖已有文件会让客户端删掉旧索引却**不**为新名字建索引（实测：覆盖 81 个文件后索引清空，粘贴的条目全部变灰）。所以 ffmpeg 输出到 `{export_path}.part`（非音频扩展名，客户端忽略），完成后先删旧文件（客户端删索引），再对 `.part` 建**硬链接**到最终名——目录项瞬间出现且内容完整，客户端按"新建"解析一次；最后删 `.part`。不支持硬链接的文件系统退化为 rename，并提示重启客户端。已经被记坏/清空的索引：重启客户端，或在 设置 → 本地文件 里关掉再打开该文件夹让它重建。
 * **不要动 tag 来"防版权"**：曾以为本地文件变灰是桌面端按 标题+艺人 链接到本地区不可用的曲库条目，给标题加过后缀；实测无效——变灰的真实原因是粘贴的 URI 与客户端自己的文件身份不一致（§1 第 3 条：时长段必须等于客户端索引值），改 tag 只会再制造一层不一致。写完文件后按 §1 第 3 条的公式从**导出结果**（不是源文件）算时长，写进 `local_uri`；`local_export` 里没有时长段的旧行视为不完整，下次 export 自动重做。删除客户端正打开（播放中）的旧文件在 Windows 上 EPERM，带退避重试（6 次 / ≤ 16 s），仍失败则记为 export 错误，下次再来。
 * 写 `local_export(canonical_key, export_path, local_uri, content_hash)`；hash 未变则跳过。
@@ -244,7 +258,8 @@ spotifify auth netease [--cookie]    扫码或粘贴 Cookie
 spotifify sync [--dry-run] [--prune] [--source netease|local] [--playlist <name>] [--skip-match]
 spotifify review                     Ink TUI 复核队列
 spotifify status                     各状态计数、歌单映射、待粘贴数、上次运行
-spotifify unmatched [--status local|review|all] [--tsv]   列出无匹配的歌及其本地文件/导出状态（网易云链接便于下载）
+spotifify unmatched [--status local|review|all] [--file with|without|all] [--tsv]   列出无匹配的歌及其 key、本地文件/导出状态（--file without = 还缺文件、需要 attach 的）
+spotifify attach <netease id|key> <file>   把手头的音频作为该歌的网易云下载复制进 local.dirs[0]（§4.3），并标为 local(user)
 spotifify aliases [--apply] [--min <n>]   从已确认的匹配推断艺人别名；--apply 写入配置
 spotifify pending [--copy] [--playlist <name>]
 spotifify rematch <canonical_key>|--all-local
@@ -260,7 +275,7 @@ spotifify task install|uninstall     注册 / 注销 Windows 任务计划（调�
 
 布局：左列复核项列表（来源歌单 / 标题 / 艺人 / 分数），右侧对比面板——来源 vs 候选逐列对齐显示 title / artists / album / duration(Δ) / score / playable，候选按分数排序。
 
-按键：`j/k` 移动，`Tab` 轮换 review / low / local 列表，`1-9` 选候选，`Enter` 确认，`o` 在浏览器打开选中候选（open.spotify.com/track/…），`O` 打开来源（网易云歌曲页，本地文件则用默认播放器打开），`l` 标为本地上传，`s` 跳过，`/` 自定义搜索词（`ink-text-input`），`p` 粘贴 Spotify 链接/URI 直接指定，`u` 撤销上一决策，`?` 帮助，`q` 退出。每个决策立即写库（`decided_by=user`），无"保存"步骤。
+按键：`j/k` 移动，`Tab` 轮换 review / low / local 列表，`1-9` 选候选，`Enter` 确认，`o` 在浏览器打开选中候选（open.spotify.com/track/…），`O` 打开来源（网易云歌曲页，本地文件则用默认播放器打开），`l` 标为本地上传（网易云条目没有本地文件时先提示输入音频路径，走 §4.3；留空则只标记），`s` 跳过，`/` 自定义搜索词（`ink-text-input`），`p` 粘贴 Spotify 链接/URI 直接指定，`u` 撤销上一决策，`?` 帮助，`q` 退出。每个决策立即写库（`decided_by=user`），无"保存"步骤。
 
 风险：Ink 依赖 `process.stdin.setRawMode`，Bun 1.4 已支持；若遇到问题，`review` 子命令可用 `node` 运行同一份代码（无 Bun 专属 API 进入 TUI 模块，DB 通过接口注入）。
 
@@ -332,6 +347,7 @@ src/
     netease/source.ts        pull 实现（按 trackUpdateTime 增量）
     local/scan.ts            遍历 / 变更检测 / hash
     local/ncm.ts             ncm 头部解析 + 解密
+    local/wrapped.ts         ID3v2 + m4a 伪 mp3 的检测与剥离
     local/tags.ts            music-metadata + 文件名兜底
     local/source.ts          pull 实现
   match/
@@ -352,7 +368,8 @@ src/
     plan.ts                  Plan 类型 + 纯 diff（computePlaylistPlan）
     reorder.ts               LIS 最小移动
     apply.ts                 执行 Plan / applyExports
-    export.ts                ffmpeg 导出
+    export.ts                ffmpeg 导出；stageInput / runFfmpeg 供 attach 复用
+    attach.ts                手动指定文件：复制进 local.dirs[0] 并打 163 key（§4.3）
     duration.ts              客户端同款整秒时长（mp3 帧数 / mp4 mvhd）
     run.ts                   六阶段编排 / buildPlan / formatPlan
   tui/
@@ -360,7 +377,7 @@ src/
   util/                      log / retry / clipboard / fs / bin / lock
 scripts/register-task.ps1    Windows 任务计划
 scripts/build.ts             两步单文件编译（先打包并 stub 掉 react-devtools-core，再 --compile）
-test/                        bun test：normalize / score / reorder / localUri / ncm(合成 fixture) / tags / plan / e2e(假 Spotify 服务)
+test/                        bun test：normalize / score / reorder / localUri / ncm(合成 fixture) / tags / plan / attach / e2e(假 Spotify 服务)
 ```
 
 ## 12. 依赖
@@ -375,7 +392,7 @@ Bun 内置：`bun:sqlite`、`Bun.CryptoHasher('blake2b256')`、`fetch`、`Bun.sp
 
 ## 14. 测试策略
 
-* 单元：`normalize`（CJK / 括号 / feat.）、`score`（门槛边界）、`reorder`（LIS 移动数与结果顺序，200 组随机排列）、`localUri`（往返编解码、实测客户端 URI）、`duration`（合成 Info/Xing 帧与 mvhd，钉住客户端索引里的实测值）、`plan`（add / prune / foreign / awaiting / stale / 重复项 / replace 许可 / 无 item 条目 / linked）、`ncm`（合成 fixture 的头部解析与解密 + RC4 已知答案）、`tags`（文件名解析）、`source`（本地文件读不了沿用旧行；网易云 `song_detail` 漏返回不冻结歌单）、`client`（5xx 只重试 GET）、`matcher`（声纹 ISRC 命中已入池的候选）、`exportNames`（长名冲突有限收敛）。
+* 单元：`normalize`（CJK / 括号 / feat.）、`score`（门槛边界）、`reorder`（LIS 移动数与结果顺序，200 组随机排列）、`localUri`（往返编解码、实测客户端 URI）、`duration`（合成 Info/Xing 帧与 mvhd，钉住客户端索引里的实测值）、`plan`（add / prune / foreign / awaiting / stale / 重复项 / replace 许可 / 无 item 条目 / linked）、`ncm`（合成 fixture 的头部解析与解密 + RC4 已知答案）、`tags`（文件名解析）、`source`（本地文件读不了沿用旧行；网易云 `song_detail` 漏返回不冻结歌单）、`client`（5xx 只重试 GET）、`matcher`（声纹 ISRC 命中已入池的候选）、`exportNames`（长名冲突有限收敛）、`attach`（无 tag 的 mp3 交给工具后被扫描器认作该网易云歌；同名残片被替换、别的歌保留；过短的文件拒绝且不留残留）。
 * 端到端（`test/e2e.test.ts`，需要 ffmpeg 的部分缺失时跳过）：ffmpeg 生成的本地库 → 真实 matcher/plan/apply → 进程内假 Spotify（`SPOTIFIFY_SPOTIFY_API`）。覆盖：首建顺序、Like、导出、第二次运行零写请求、远端漂移修复（重排 / 重加）、粘贴的本地项对账与旧格式 stale 条目清理、foreign 保留、`--prune` 前后行为、dry-run 无写；删除边界：到期重搜落入 review 不撤销粘贴、`--playlist` 不取消其他歌单的喜欢、退出镜像的歌单仍引用的导出不删、没有镜像歌单时 `--prune` 零写、101 项跨批删除叠加并发插入；重排策略：≤100 一次原子替换、>100 走移动、列表后被改动的歌单抛 `PlaylistDriftError` 且零写。
 * 网易云适配层只对必需字段做 zod 校验（`playlist`、`trackIds` 缺失即报错，不默认为空）。
 

@@ -2,6 +2,7 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 import type { Candidate, MatchRow } from "../match/types.ts";
 import type { SourceTrackRow } from "../state/repo.ts";
+import type { AttachResult } from "../sync/attach.ts";
 import { openExternal } from "../util/open.ts";
 import { CandidatePane, MAX_SHOWN_CANDIDATES } from "./CandidatePane.tsx";
 import { SearchInput, type InputMode } from "./SearchInput.tsx";
@@ -21,6 +22,8 @@ export interface ReviewRepo {
 export interface AppProps {
   repo: ReviewRepo;
   matcher: ReviewMatcher;
+  /** Copy a user-supplied audio file into the library as this track's NetEase download; see sync/attach.ts. */
+  attach: (track: SourceTrackRow, path: string) => Promise<AttachResult>;
   market: string;
   initialQueues: Queues;
   /** Called with the decision count right before the app unmounts. */
@@ -60,7 +63,7 @@ interface UiState {
 }
 
 const HELP =
-  "j/k ↑/↓ move   Tab switch tab   1-9 select candidate   Enter confirm   o open candidate   O open source   l mark local   s skip   / search   p paste Spotify link   u undo   ? help   q quit";
+  "j/k ↑/↓ move   Tab switch tab   1-9 select candidate   Enter confirm   o open candidate   O open source   l keep local (asks for a file when there is none)   s skip   / search   p paste Spotify link   u undo   ? help   q quit";
 
 const SPINNER = ["-", "\\", "|", "/"];
 
@@ -97,7 +100,7 @@ function useTerminalSize(): { columns: number; rows: number } {
   return size;
 }
 
-export function App({ repo, matcher, market, initialQueues, onExit }: AppProps) {
+export function App({ repo, matcher, attach, market, initialQueues, onExit }: AppProps) {
   const { exit } = useApp();
   const { rows } = useTerminalSize();
   const [state, setState] = useState<UiState>(() => ({
@@ -174,7 +177,7 @@ export function App({ repo, matcher, market, initialQueues, onExit }: AppProps) 
     );
   };
 
-  const unmatched = (s: UiState, loc: Location, status: "local" | "skipped") => {
+  const unmatched = (s: UiState, loc: Location, status: "local" | "skipped", text = `${status === "local" ? "marked local" : "skipped"}: ${loc.item.track.title}`) => {
     decide(
       s,
       loc,
@@ -187,7 +190,7 @@ export function App({ repo, matcher, market, initialQueues, onExit }: AppProps) 
         decidedBy: "user",
         decidedAt: Date.now(),
       },
-      `${status === "local" ? "marked local" : "skipped"}: ${loc.item.track.title}`,
+      text,
     );
   };
 
@@ -265,6 +268,24 @@ export function App({ repo, matcher, market, initialQueues, onExit }: AppProps) 
     );
   };
 
+  const attachPath = (s: UiState, item: ReviewItem, path: string) => {
+    const key = item.match.canonicalKey;
+    commit({ ...s, mode: { kind: "normal" }, busy: new Set(s.busy).add(key), status: { text: `attaching ${path}`, kind: "info" } });
+    attach(item.track, path).then(
+      (r) =>
+        settle(key, (s2, loc) => {
+          if (!loc) {
+            commit(s2);
+            return;
+          }
+          const replaced = r.replaced.length > 0 ? `, replaced ${r.replaced.length} old download(s)` : "";
+          unmatched(s2, loc, "local", `attached ${r.path}${replaced}; sync exports it`);
+        }),
+      (err: unknown) =>
+        settle(key, (s2) => commit({ ...s2, status: { text: `attach failed: ${err instanceof Error ? err.message : String(err)}`, kind: "error" } })),
+    );
+  };
+
   const finished = TABS.every((t) => state.queues[t].length === 0) && state.undo.length === 0;
 
   useInput(
@@ -333,7 +354,8 @@ export function App({ repo, matcher, market, initialQueues, onExit }: AppProps) 
         return;
       }
       if (input === "l") {
-        unmatched(s, loc, "local");
+        if (item.track.file === undefined && item.track.neteaseId !== undefined) commit({ ...s, mode: { kind: "input", input: "path", value: "" } });
+        else unmatched(s, loc, "local");
         return;
       }
       if (input === "s") {
@@ -398,12 +420,21 @@ export function App({ repo, matcher, market, initialQueues, onExit }: AppProps) 
             }}
             onSubmit={(value) => {
               const s = ref.current;
+              if (s.mode.kind !== "input") return;
               const trimmed = value.trim();
+              if (s.mode.input === "path") {
+                const index = s.cursor[s.tab];
+                const current = s.queues[s.tab][index];
+                if (!current) commit({ ...s, mode: { kind: "normal" } });
+                else if (trimmed.length === 0) unmatched({ ...s, mode: { kind: "normal" } }, { tab: s.tab, index, item: current }, "local");
+                else attachPath(s, current, trimmed);
+                return;
+              }
               if (trimmed.length === 0) {
                 commit({ ...s, mode: { kind: "normal" } });
                 return;
               }
-              if (s.mode.kind === "input" && s.mode.input === "uri") pasteUri(s, item, trimmed);
+              if (s.mode.input === "uri") pasteUri(s, item, trimmed);
               else search(s, item, trimmed);
             }}
             onCancel={() => commit({ ...ref.current, mode: { kind: "normal" } })}

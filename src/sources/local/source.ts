@@ -10,12 +10,21 @@ import { scanDirs, type ScannedFile } from "./scan.ts";
 import { parseFilename, readTags, type FileTags } from "./tags.ts";
 
 export const LOCAL_LIBRARY_ID = "library";
+/** Bump when `describeFile` reads files differently: the next pull rereads every file instead of trusting cached rows. */
+export const SCAN_VERSION = 3; // 3: containers sniffed by content (an m4a saved as .mp3 used to scan as duration 0)
 
 const CONCURRENCY = 8;
+/** A file this much shorter than the song its 163 key names is a stub (a 2.6 s preview, a download cut short), not a shorter edit. */
+const TRUNCATED_RATIO = 0.5;
+const WARN_EXAMPLES = 5;
 
-type Described = Pick<SourceTrack, "title" | "artists" | "album" | "durationMs" | "isrc" | "neteaseId" | "aliases">;
+/** A NetEase download whose audio is a fraction of the song it is tagged as; never worth matching or exporting. */
+export class TruncatedDownloadError extends Error {}
 
-async function describe(path: string, pattern: Config["local"]["filename_pattern"]): Promise<Described> {
+export type Described = Pick<SourceTrack, "title" | "artists" | "album" | "durationMs" | "isrc" | "neteaseId" | "aliases">;
+
+/** Metadata the scanner records for one file; throws TruncatedDownloadError for a NetEase stub. */
+export async function describeFile(path: string, pattern: Config["local"]["filename_pattern"]): Promise<Described> {
   if (extname(path).toLowerCase() === ".ncm") {
     const m = await readNcmMeta(path);
     return {
@@ -38,6 +47,9 @@ async function describe(path: string, pattern: Config["local"]["filename_pattern
   }
   const ne = tags.netease;
   if (ne && ne.musicId > 0) {
+    if (tags.durationMs !== undefined && ne.duration > 0 && tags.durationMs < ne.duration * TRUNCATED_RATIO) {
+      throw new TruncatedDownloadError(`plays ${(tags.durationMs / 1000).toFixed(1)}s of a ${Math.round(ne.duration / 1000)}s song`);
+    }
     // NetEase download with its "163 key" comment: the song id makes it share a canonical key with the playlist track.
     return {
       title: tags.title || ne.musicName,
@@ -67,6 +79,7 @@ function splitNeteaseArtists(artists: string[]): string[] {
 /** Every configured directory merged into a single fixed playlist, tracks in absolute-path order. */
 export class LocalSource implements Source {
   readonly kind = "local" as const;
+  private readonly truncated: string[] = [];
 
   constructor(
     private readonly cfg: Config["local"],
@@ -78,11 +91,16 @@ export class LocalSource implements Source {
   async pull(): Promise<{ playlists: Array<{ playlist: SourcePlaylist; tracks: SourceTrack[] }> }> {
     const files = await scanDirs(this.cfg.dirs, this.cfg.extensions);
     let done = 0;
+    this.truncated.length = 0;
     const tracks = await mapLimit(files, CONCURRENCY, async (file) => {
       const track = await this.track(file);
       this.onProgress?.(++done, files.length);
       return track;
     });
+    if (this.truncated.length > 0) {
+      const more = this.truncated.length - WARN_EXAMPLES;
+      log.warn(`skipping ${this.truncated.length} truncated download(s)`, { files: [...this.truncated.slice(0, WARN_EXAMPLES), ...(more > 0 ? [`… ${more} more`] : [])] });
+    }
     const playlist: SourcePlaylist = { kind: "local", externalId: LOCAL_LIBRARY_ID, name: this.cfg.playlist_name };
     return { playlists: [{ playlist, tracks: tracks.filter((t) => t !== null) }] };
   }
@@ -92,9 +110,14 @@ export class LocalSource implements Source {
     if (cached?.file !== undefined && cached.file.size === file.size && cached.file.mtimeMs === file.mtimeMs) return stripRow(cached);
     try {
       const contentHash = await hashFile(file.path);
-      const meta = await describe(file.path, this.cfg.filename_pattern);
+      const meta = await describeFile(file.path, this.cfg.filename_pattern);
       return { kind: "local", externalId: file.path, ...meta, file: { path: file.path, contentHash, size: file.size, mtimeMs: file.mtimeMs } };
     } catch (e) {
+      if (e instanceof TruncatedDownloadError) {
+        // Not "unreadable right now": the file is whole and will stay a stub, so it must not keep a row either.
+        this.truncated.push(`${basename(file.path)} (${e.message})`);
+        return null;
+      }
       // A file that cannot be read right now (half-downloaded, locked, damaged) is not a file that left the
       // library: the previous row stands until it can be read again, so the track is never treated as removed.
       const error = e instanceof Error ? e.message : String(e);

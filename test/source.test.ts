@@ -9,7 +9,8 @@ import { NeteaseSource } from "../src/sources/netease/source.ts";
 import type { SourceTrack } from "../src/sources/types.ts";
 import { openDatabase } from "../src/state/db.ts";
 import { Repo } from "../src/state/repo.ts";
-import { buildNcm } from "./helpers/ncm.ts";
+import { probeBinary } from "../src/util/bin.ts";
+import { aesEcbEncrypt, buildNcm, META_KEY } from "./helpers/ncm.ts";
 
 describe("local source: a file that cannot be read is not a file that left the library", () => {
   const root = mkdtempSync(join(tmpdir(), "spotifify-source-"));
@@ -35,6 +36,29 @@ describe("local source: a file that cannot be read is not a file that left the l
 
     const unknown = await new LocalSource(cfg, new Map()).pull(); // never seen before: nothing to keep, nothing lost
     expect(unknown.playlists[0]?.tracks).toEqual([]);
+  });
+});
+
+const haveFfmpeg = (await probeBinary("ffmpeg", ["-version"])) !== null;
+
+describe.skipIf(!haveFfmpeg)("local source: a NetEase download far shorter than its 163 key says is a stub, not a track", () => {
+  const root = mkdtempSync(join(tmpdir(), "spotifify-stub-"));
+  const cfg = ConfigSchema.parse({ local: { dirs: [root] } }).local;
+  const key = (duration: number) =>
+    "163 key(Don't modify):" + aesEcbEncrypt(META_KEY, Buffer.from("music:" + JSON.stringify({ musicId: 7, musicName: "Song", artist: [["A", 1]], album: "Al", format: "mp3", duration }), "utf8")).toString("base64");
+  const make = async (name: string, duration: number) => {
+    const args = ["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-metadata", `comment=${key(duration)}`, "-c:a", "libmp3lame", "-b:a", "32k", "-id3v2_version", "4", join(root, name)];
+    const proc = Bun.spawn(["ffmpeg", ...args], { stdout: "ignore", stderr: "pipe" });
+    if ((await proc.exited) !== 0) throw new Error(await new Response(proc.stderr).text());
+  };
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  test("2 s of a 4-minute song is skipped; 2 s of a 2 s song is kept", async () => {
+    await make("stub.mp3", 251_000);
+    await make("whole.mp3", 2_000);
+    const { playlists } = await new LocalSource(cfg, new Map()).pull();
+    expect(playlists[0]?.tracks.map((t) => t.externalId)).toEqual([join(root, "whole.mp3")]);
   });
 });
 

@@ -18,6 +18,7 @@ import { SCOPES, type SpotifyTokens } from "./spotify/types.ts";
 import { openDatabase, schemaVersion } from "./state/db.ts";
 import { Repo } from "./state/repo.ts";
 import { applyExports } from "./sync/apply.ts";
+import { attachFile } from "./sync/attach.ts";
 import { formatPlan, planExportsOnly, runSync, selectedKeys, type AwaitingEntry, type SyncSummary } from "./sync/run.ts";
 import { runReviewTui } from "./tui/index.ts";
 import { probeBinary } from "./util/bin.ts";
@@ -362,7 +363,7 @@ program
       const api = spotifyApi(c);
       const market = await api.resolveMarket(c.cfg.spotify.market);
       const matcher = new Matcher({ api, repo: c.repo, cfg: c.cfg, market });
-      const { decided } = await runReviewTui({ repo: c.repo, matcher, market });
+      const { decided } = await runReviewTui({ repo: c.repo, matcher, market, cfg: c.cfg });
       console.log(`${decided} decision(s) saved; run \`spotifify sync\` to apply`);
     } catch (e) {
       fail(e);
@@ -400,20 +401,24 @@ program
   .command("unmatched")
   .description("list tracks with no Spotify match (status local/review) in mirrored playlists, with the file that would back them")
   .option("--status <s>", "local | review | all", "local")
+  .option("--file <f>", "with | without | all: only tracks that have / lack a local file", "all")
   .option("--tsv", "tab-separated output for spreadsheets")
-  .action(async (opts: { status: string; tsv?: boolean }) => {
+  .action(async (opts: { status: string; file: string; tsv?: boolean }) => {
     try {
+      if (!["with", "without", "all"].includes(opts.file)) throw new InvalidArgumentError(`--file must be with, without or all, not "${opts.file}"`);
       const c = await ctx();
       const statuses: MatchStatus[] = opts.status === "all" ? ["local", "review"] : opts.status === "review" ? ["review"] : ["local"];
       const keys = selectedKeys(c.repo, c.cfg, {});
-      const rows = statuses.flatMap((s) => c.repo.listMatches(s)).filter((m) => keys.has(m.canonicalKey));
-      const tracks = c.repo.representativeTracks(rows.map((m) => m.canonicalKey));
+      const matches = statuses.flatMap((s) => c.repo.listMatches(s)).filter((m) => keys.has(m.canonicalKey));
+      const tracks = c.repo.representativeTracks(matches.map((m) => m.canonicalKey));
+      const rows = matches.flatMap((m) => {
+        const t = tracks.get(m.canonicalKey);
+        return t && (opts.file === "all" || (t.file !== undefined) === (opts.file === "with")) ? [{ m, t }] : [];
+      });
       const exports = new Map(c.repo.listExports().map((e) => [e.canonicalKey, e] as const));
       if (opts.tsv) console.log(["status", "decided_by", "key", "title", "artists", "album", "playlists", "file", "exported"].join("\t"));
       let withFile = 0;
-      for (const m of rows) {
-        const t = tracks.get(m.canonicalKey);
-        if (!t) continue;
+      for (const { m, t } of rows) {
         if (t.file) withFile++;
         const playlists = c.repo.playlistNamesForKey(m.canonicalKey).join(", ");
         const file = t.file?.path ?? "";
@@ -422,12 +427,12 @@ program
         if (opts.tsv) console.log([m.status, m.decidedBy ?? "", m.canonicalKey, t.title, t.artists.join("/"), t.album ?? "", playlists, file, exported].join("\t"));
         else {
           const link = t.neteaseId !== undefined ? `https://music.163.com/#/song?id=${t.neteaseId}` : "";
-          console.log(`[${status}] ${t.artists.join(", ")} - ${t.title}${t.album ? ` (${t.album})` : ""}  ${link}`);
+          console.log(`[${status}] ${t.artists.join(", ")} - ${t.title}${t.album ? ` (${t.album})` : ""}  ${m.canonicalKey}  ${link}`);
           console.log(`         in: ${playlists}${file ? `\n         file: ${file}` : ""}${exported ? `\n         exported: ${exported}` : ""}`);
         }
       }
       if (!opts.tsv) {
-        console.log(`\n${rows.length} track(s); ${withFile} backed by a local file, ${rows.length - withFile} need one (download them into local.dirs, then sync)`);
+        console.log(`\n${rows.length} track(s); ${withFile} backed by a local file, ${rows.length - withFile} need one (download them into local.dirs, or \`spotifify attach <key> <file>\`, then sync)`);
       }
     } catch (e) {
       fail(e);
@@ -507,6 +512,27 @@ program
       const targets = opts.allLocal ? c.repo.listMatches("local").filter((m) => m.decidedBy === "auto") : keys.map((k) => c.repo.getMatch(k)).filter((m) => m !== null);
       for (const m of targets) c.repo.upsertMatch({ ...m, status: "pending", spotifyId: null, spotifyUri: null, score: null, decidedBy: null, decidedAt: null });
       console.log(`reset ${targets.length} match(es) to pending`);
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+program
+  .command("attach")
+  .description("give a NetEase track that has no usable local file one: the audio is copied into local.dirs[0] tagged as that song's download, and the track is kept local")
+  .argument("<key>", "netease:<id> or the bare song id (see `spotifify unmatched`)")
+  .argument("<file>", "audio file; mp3/m4a/flac/ogg/opus/webm/wav/ncm keep their audio as is, anything else is encoded to mp3")
+  .action(async (key: string, file: string) => {
+    try {
+      const c = await ctx();
+      const canonical = /^\d+$/.test(key) ? `netease:${key}` : key;
+      const track = c.repo.representativeTracks([canonical]).get(canonical);
+      const match = c.repo.getMatch(canonical);
+      if (!track || !match) throw new Error(`unknown track ${canonical}; \`spotifify unmatched --tsv\` lists keys`);
+      const r = await attachFile(track, file, c.cfg);
+      c.repo.upsertMatch({ ...match, status: "local", spotifyId: null, spotifyUri: null, score: null, decidedBy: "user", decidedAt: Date.now() });
+      const replaced = r.replaced.length > 0 ? `; replaced ${r.replaced.join(", ")}` : "";
+      console.log(`wrote ${r.path}${replaced}\n${canonical} kept local; run \`spotifify sync\` to export it`);
     } catch (e) {
       fail(e);
     }

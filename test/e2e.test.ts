@@ -584,6 +584,18 @@ describe.skipIf(!haveFfmpeg)("netease track backed by a local .ncm (mirror_playl
     expect(again.summary.matched.searched).toBe(0);
     expect(again.summary.apply?.exported).toBe(0);
   });
+
+  test("a file that leaves the library takes its export out of the plan: not awaited, collected with --prune", async () => {
+    rmSync(join(musicDir, "Artist C - Unknown Song.ncm"));
+    const reported = await runSync({ cfg, repo, api }, { dryRun: false, prune: false, skipMatch: false });
+    expect(reported.summary.awaiting).toEqual([]);
+    expect(reported.plan.exportGc.map((e) => basename(e.exportPath))).toEqual(["Artist C - Unknown Song.mp3"]);
+    expect(existsSync(join(exportDir, "Artist C - Unknown Song.mp3"))).toBe(true); // report only
+
+    await runSync({ cfg, repo, api }, { dryRun: false, prune: true, skipMatch: false });
+    expect(readdirSync(exportDir)).toEqual([]);
+    expect(repo.listExports()).toEqual([]);
+  });
 });
 
 describe.skipIf(!haveFfmpeg)("prune stays within what this run reconciles", () => {

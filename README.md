@@ -68,9 +68,10 @@ State lives in `~/.spotifify` (`config.toml`, `state.db`, logs); override with `
 | `doctor` | Check config, state db, `ffmpeg`/`fpcalc`, token scopes, search-quota deadline, and the desktop client's local-files index (exports it never indexed or indexed with another duration — the two causes of grey rows). |
 | `auth spotify` / `auth netease [--cookie …]` | Log in. |
 | `sync [--dry-run] [--prune] [--source netease\|local] [--playlist NAME] [--skip-match]` | Pull → match → export → plan → apply → report. `--prune` also removes superseded local entries and exported files no longer needed — never beyond what the run can account for: with `--playlist`/`--source` nothing is unliked that another mirrored playlist wants, exports still referenced from a playlist outside the run are kept, and a run that mirrors no playlist at all prunes nothing. Exit code `3` = re-authenticate. |
-| `review` | Ink TUI: `j/k` move, `1-9`/`Enter` pick a candidate, `/` custom search, `p` paste a Spotify URL/URI, `o`/`O` open candidate/source in the browser, `l` keep as local file, `s` skip, `u` undo, `?` help. |
+| `review` | Ink TUI: `j/k` move, `1-9`/`Enter` pick a candidate, `/` custom search, `p` paste a Spotify URL/URI, `o`/`O` open candidate/source in the browser, `l` keep as local file (asks for an audio file when the track has none), `s` skip, `u` undo, `?` help. |
 | `status` | Match counts, playlist mappings, last run. |
-| `unmatched [--status local\|review\|all] [--tsv]` | Tracks without a Spotify match and the local file that backs them. |
+| `unmatched [--status local\|review\|all] [--file with\|without\|all] [--tsv]` | Tracks without a Spotify match, their key, and the local file that backs them; `--file without` lists the ones still needing a file (`attach`). |
+| `attach <netease id \| key> <file>` | Give a NetEase track that has no usable local file one by hand: the audio is copied into `local.dirs[0]` with the song's `163 key` tag (a stub or damaged download of the same song under that name is replaced) and the track is kept local. |
 | `aliases [--apply] [--min N]` | Mine `matching.artist_aliases` (e.g. `"陈奕迅" = "Eason Chan"`) from confirmed matches. |
 | `pending [--copy] [--playlist NAME]` | Local-file URIs still to be pasted, from the last sync. |
 | `rematch <key…> \| --all-local` | Forget match decisions so the next sync searches again. |
@@ -90,6 +91,8 @@ Spotify's Web API cannot *add* a local file to a playlist, but it can read, reor
 If pasted entries stay grey ("can't play this right now"), restart the desktop client or toggle the folder off/on under *Settings → Local Files* so its index is rebuilt. Playing local files on a phone: Premium, same Wi‑Fi as the desktop client, then *Download* the playlist on the phone.
 
 Set `local.mirror_playlist = false` if you only want local files to supply audio for NetEase playlists rather than mirroring the whole folder as its own playlist.
+
+A song that NetEase has delisted and whose download is a truncated stub cannot be exported. Find the audio elsewhere and hand it over — `spotifify attach <id> <file>`, or `l` in `review` — and it becomes that song's download: tagged like the NetEase client tags it, recognised by the next `sync`, exported as usual.
 
 ## Configuration
 

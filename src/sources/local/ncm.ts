@@ -1,4 +1,4 @@
-import { createDecipheriv } from "node:crypto";
+import { createCipheriv, createDecipheriv } from "node:crypto";
 import { mkdir, open, type FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
@@ -122,6 +122,12 @@ export function decode163Key(comment: string, path: string): NcmMeta | null {
   } catch {
     return null;
   }
+}
+
+/** Inverse of `decode163Key`: the comment tag the NetEase client would write for this song (see sync/attach.ts). */
+export function encode163Key(meta: NcmMeta): string {
+  const c = createCipheriv("aes-128-ecb", META_KEY, null);
+  return KEY_163 + Buffer.concat([c.update(Buffer.from("music:" + JSON.stringify(meta), "utf8")), c.final()]).toString("base64");
 }
 
 interface Header {

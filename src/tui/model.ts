@@ -52,7 +52,8 @@ export function scoreColor(score: number): "green" | "yellow" | "red" {
   return "red";
 }
 
+/** Where the representative row comes from; a netease row means no local file backs the track (rows with a file are preferred). */
 export function sourceOrigin(track: SourceTrackRow): string {
-  if (track.kind === "netease") return `netease  id ${track.externalId}`;
+  if (track.kind === "netease") return `netease  id ${track.externalId}  no local file (l attaches one)`;
   return `local  ${track.file?.path ?? track.externalId}`;
 }
