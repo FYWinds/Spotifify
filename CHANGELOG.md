@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/FYWinds/Spotifify/compare/v0.1.4...v0.1.5) (2026-09-08)
+
+
+### Features
+
+* **cli:** pin a track's Spotify match by link ([477cc19](https://github.com/FYWinds/Spotifify/commit/477cc19c4c82ddaa05af81fa9e5771815de8af25))
+
 ## [0.1.4](https://github.com/FYWinds/Spotifify/compare/v0.1.3...v0.1.4) (2026-09-08)
 
 
